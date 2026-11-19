@@ -67,3 +67,103 @@ until it'll try again and sends nothing in the meantime.
 
 Reading is separate. It stays on the anonymous connection and keeps working whether or not
 any of this is set up, signed in, or broken.
+
+## YouTube
+
+Optional, and more work than Twitch — skip it and the dock still does Twitch.
+
+YouTube has no free way to *send*. Posting to live chat goes through the official YouTube Data
+API, and that means your own Google Cloud project with its own daily quota. The split this
+tool makes: **reading never touches the API** — it uses the chat page's own interface, same
+as before, free. The quota is spent on your replies and nothing else.
+
+### What a reply costs
+
+From [Google's quota table](https://developers.google.com/youtube/v3/determine_quota_cost):
+
+| Call | Units | When |
+|---|---|---|
+| `liveChatMessages.insert` | 20 | every reply |
+| `videos.list` | 1 | once per broadcast, to find its chat ID |
+| `channels.list` | 1 | once per sign-in, to learn which channel you are |
+
+A project gets **10,000 units a day** by default — about 500 replies. The quota resets at
+**midnight Pacific Time**. When it runs out the dock says so and says how long until the
+reset; it doesn't keep trying.
+
+`liveChatMessages.list` — reading chat through the API — costs 5 units a call and would eat the
+whole quota in minutes. This tool never calls it.
+
+### 1. Create the Google Cloud project and the OAuth client
+
+1. Go to <https://console.cloud.google.com/> and create a project. Any name.
+2. **APIs & Services → Library**, find **YouTube Data API v3**, **Enable**.
+3. Set up the **OAuth consent screen** (Google Auth Platform → Branding / Audience):
+   - User type **External**.
+   - App name and your email where it asks.
+   - Under **Audience → Test users**, add the Google account that owns your YouTube channel.
+4. **Clients → Create client**. Application type: **Desktop app**. Name it anything. **Create**.
+5. Copy the **Client ID** and the **Client secret**.
+
+Google's own walkthrough for this flow:
+<https://developers.google.com/youtube/v3/guides/auth/installed-apps>.
+
+**The redirect URI** is `http://127.0.0.1:3131` — this server, on loopback, no path. The setup
+page shows the exact value for your port. A *Desktop app* client doesn't ask you to register
+it. If you'd rather use a *Web application* client, add exactly that URI under **Authorized
+redirect URIs**.
+
+The server has to be on the port that redirect URI names when you sign in. If `3131` was
+taken and it fell back to another port, the setup page shows the one it's really using.
+
+### 2. Paste it and sign in
+
+1. Open **http://127.0.0.1:3131/setup** in a normal browser — not the OBS dock. Google
+   refuses to show its sign-in page inside embedded browsers.
+2. Under **YouTube**, paste the client ID and the client secret, **Save**.
+3. **Sign in with Google**. Pick the account that owns the channel, approve.
+4. Google sends the browser back to this server, and the setup page shows
+   **Signed in as _your channel_**.
+
+Replies go to whatever broadcast the reader is already following — the first YouTube source
+in the panel that's live. Nothing to configure.
+
+### What it asks for, and what it stores
+
+- **One scope: `https://www.googleapis.com/auth/youtube.force-ssl`.** The
+  [insert call](https://developers.google.com/youtube/v3/live/docs/liveChatMessages/insert)
+  accepts that or the plain `youtube` scope, and Google offers nothing chat-only — so the
+  consent screen describes more than this tool does. What it actually calls is the three
+  rows in the table above.
+- The client ID, client secret and tokens all live in **`secrets.json`** beside `config.json`,
+  mode `0600`, in `.gitignore`. Never logged, never sent to a page — the setup page shows the
+  client ID and the words "secret saved", not the secret.
+- Sign-in uses PKCE and a one-time `state` value; the callback is refused unless it comes from
+  this machine and matches a sign-in this server started in the last ten minutes.
+- Access tokens last about an hour and are refreshed before a send when under five minutes
+  remain.
+- **Sign out** revokes the token at Google and deletes the local copy. The client stays, so
+  signing back in is one click.
+
+### The seven-day catch
+
+While the consent screen's publishing status is **Testing**, Google issues refresh tokens that
+**expire after seven days**
+([Google's OAuth docs](https://developers.google.com/identity/protocols/oauth2#expiration)).
+The dock tells you when that happens — *Google sign-in expired — sign in again* — and it's one
+click to fix. To stop it happening, move the app to **In production** on the Audience page.
+A refresh token also dies if it goes unused for six months, or if you revoke the app's access
+in your Google account.
+
+### When a send fails
+
+The dock shows YouTube's own reason: chat disabled by the owner, chat ended, not allowed to
+post (members-only, for instance), message text rejected, posting too fast. Two cases it words
+itself:
+
+- **Not live yet** — the reader hasn't found a live broadcast, or the broadcast has no active
+  chat. There's nothing to reply in until it's live.
+- **Quota used up** — with the time until midnight Pacific.
+
+Google's API docs don't give a maximum message length, so the dock doesn't guess one — if a
+message is too long for YouTube, YouTube says so.

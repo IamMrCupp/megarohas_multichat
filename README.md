@@ -106,6 +106,9 @@ answer from the same box.
 - Signing in is once per platform and optional per platform — step by step in
   [docs/SETUP-SENDING.md](docs/SETUP-SENDING.md). **Twitch** needs a client ID from your own
   Twitch application and one click; it asks for a single permission, `user:write:chat`.
+  **YouTube** is the heavier one: sending has to go through the official API, so it needs
+  your own Google Cloud project. Reading never uses the API — the quota is spent on replies
+  only, 20 units each out of 10,000 a day.
 
 Tokens live in `secrets.json` beside `config.json`, owner-readable only. They're never
 logged and never sent to a page.

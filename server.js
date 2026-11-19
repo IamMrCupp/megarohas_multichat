@@ -13,6 +13,7 @@ const { YouTubeSource } = require('./lib/youtube');
 const { createSendApi } = require('./lib/sendapi');
 const { SecretStore } = require('./lib/tokens');
 const { TwitchSender } = require('./lib/twitch-send');
+const { YouTubeSender } = require('./lib/youtube-send');
 
 // Когда приложение собрано в единый исполняемый файл (Node SEA, см.
 // build/build.js), статика отдаётся из встроенных ассетов, а изменяемые
@@ -239,7 +240,7 @@ const twitchSender = new TwitchSender({
 const sendApi = createSendApi({
   getPort: () => actualPort,
   getTargets: sendTargets,
-  senders: { twitch: twitchSender },
+  senders: { twitch: twitchSender, youtube: new YouTubeSender({ store: secrets }) },
   log: logErr,
 });
 
