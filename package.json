@@ -4,7 +4,8 @@
   "description": "Локальный агрегатор чатов Twitch и YouTube в один OBS-оверлей — без API-ключей и сторонних сервисов",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"
