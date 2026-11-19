@@ -91,8 +91,9 @@ A project gets **10,000 units a day** by default — about 500 replies. The quot
 **midnight Pacific Time**. When it runs out the dock says so and says how long until the
 reset; it doesn't keep trying.
 
-`liveChatMessages.list` — reading chat through the API — costs 5 units a call and would eat the
-whole quota in minutes. This tool never calls it.
+`liveChatMessages.list` — reading chat through the API — costs 5 units a call. Polled every
+five seconds, that's the whole day's quota gone in under three hours, before a single reply.
+This tool never calls it.
 
 ### 1. Create the Google Cloud project and the OAuth client
 
@@ -118,8 +119,8 @@ taken and it fell back to another port, the setup page shows the one it's really
 
 ### 2. Paste it and sign in
 
-1. Open **http://127.0.0.1:3131/setup** in a normal browser — not the OBS dock. Google
-   refuses to show its sign-in page inside embedded browsers.
+1. Open **http://127.0.0.1:3131/setup** in a normal browser — not the OBS dock. Google's
+   policy is to refuse sign-in inside embedded browsers, and a dock is one.
 2. Under **YouTube**, paste the client ID and the client secret, **Save**.
 3. **Sign in with Google**. Pick the account that owns the channel, approve.
 4. Google sends the browser back to this server, and the setup page shows
