@@ -11,6 +11,8 @@ const VERSION = require('./package.json').version;
 const { TwitchSource, channelFromUrl } = require('./lib/twitch');
 const { YouTubeSource } = require('./lib/youtube');
 const { createSendApi } = require('./lib/sendapi');
+const { SecretStore } = require('./lib/tokens');
+const { TwitchSender } = require('./lib/twitch-send');
 
 // Когда приложение собрано в единый исполняемый файл (Node SEA, см.
 // build/build.js), статика отдаётся из встроенных ассетов, а изменяемые
@@ -63,6 +65,8 @@ function saveConfig() {
     port: config.port,
     sources: [...sources.values()].map(s => ({ id: s.id, url: s.url })),
   };
+  // the Twitch application's client ID is public, so it lives here; tokens don't
+  if (config.twitchClientId) out.twitchClientId = config.twitchClientId;
   try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(out, null, 2)); } catch (e) {
     console.error('Не удалось сохранить config.json:', e.message);
   }
@@ -224,10 +228,18 @@ function sendTargets() {
   return out;
 }
 
+// Tokens and client secrets: secrets.json beside config.json, owner-only.
+const secrets = new SecretStore(path.join(APP_DIR, 'secrets.json'));
+const twitchSender = new TwitchSender({
+  store: secrets,
+  getClientId: () => (typeof config.twitchClientId === 'string' ? config.twitchClientId : ''),
+  setClientId: id => { config.twitchClientId = id; saveConfig(); },
+});
+
 const sendApi = createSendApi({
   getPort: () => actualPort,
   getTargets: sendTargets,
-  senders: {},
+  senders: { twitch: twitchSender },
   log: logErr,
 });
 

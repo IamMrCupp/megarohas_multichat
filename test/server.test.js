@@ -43,3 +43,29 @@ test('server: session, then a gated send that reports honest state', async t => 
   assert.equal((await send({ origin: s.origin, 'x-dock-token': token, host: 'evil.example:' + s.port })).json.code, 'bad_host');
   assert.equal((await request(s.port, { path: '/api/dock/session', headers: { host: 'evil.example:' + s.port } })).status, 403);
 });
+
+test('server: Twitch client ID is saved to config.json and survives; no secrets file until sign-in', async t => {
+  const fs = require('fs');
+  const path = require('path');
+  const s = await startServer(t);
+  const token = (await request(s.port, { path: '/api/dock/session' })).json.token;
+  const headers = { origin: s.origin, 'x-dock-token': token };
+  let st = await request(s.port, { path: '/api/setup/state', headers: { 'x-dock-token': token } });
+  assert.equal(st.json.platforms.twitch.available, true);
+  assert.equal(st.json.platforms.twitch.configured, false);
+  assert.equal(st.json.platforms.twitch.clientId, '');
+
+  const save = await request(s.port, { method: 'POST', path: '/api/setup/twitch/client', body: { clientId: 'fakeclientid0123456789abcdefgh' }, headers });
+  assert.equal(save.status, 200);
+  const cfg = () => JSON.parse(fs.readFileSync(path.join(s.dir, 'config.json'), 'utf8'));
+  assert.equal(cfg().twitchClientId, 'fakeclientid0123456789abcdefgh');
+  // the panel's own save path keeps it
+  await request(s.port, { method: 'POST', path: '/api/clear' });
+  await request(s.port, { method: 'DELETE', path: '/api/sources/abcd1234' });
+  assert.equal(cfg().twitchClientId, 'fakeclientid0123456789abcdefgh');
+  assert.equal(fs.existsSync(path.join(s.dir, 'secrets.json')), false);
+
+  assert.equal((await request(s.port, { method: 'POST', path: '/api/setup/twitch/client', body: { clientId: 'x' }, headers: { ...headers, 'x-dock-token': 'wrong' } })).status, 403);
+  const send = await request(s.port, { method: 'POST', path: '/api/send', body: { target: 'twitch', text: 'hi' }, headers });
+  assert.equal(send.json.results.twitch.code, 'not_signed_in');
+});

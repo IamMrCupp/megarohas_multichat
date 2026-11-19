@@ -103,6 +103,12 @@ answer from the same box.
   local echo, so the dock never shows something your viewers didn't get.
 - A platform you haven't signed in to is greyed out, not hidden. Setup lives at
   **http://127.0.0.1:3131/setup**.
+- Signing in is once per platform and optional per platform — step by step in
+  [docs/SETUP-SENDING.md](docs/SETUP-SENDING.md). **Twitch** needs a client ID from your own
+  Twitch application and one click; it asks for a single permission, `user:write:chat`.
+
+Tokens live in `secrets.json` beside `config.json`, owner-readable only. They're never
+logged and never sent to a page.
 
 **Sending is local-only.** The send and setup endpoints refuse anything that isn't this
 machine: the request has to come from a loopback address, name this server in `Host`, come

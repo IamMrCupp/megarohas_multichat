@@ -4,6 +4,9 @@ runtime/
 # локальные настройки пользователя (ссылки на каналы и порт)
 config.json
 error.log
+# sign-in tokens and client secrets for the reply dock — never commit
+secrets.json
+.secrets.json.*.tmp
 .window-profile/
 
 # шрифты пользователь кидает сам

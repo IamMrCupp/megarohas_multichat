@@ -93,12 +93,16 @@ function statusRow(p) {
 // Platform sections add their own controls by registering here.
 const sections = {};
 
-function render(state) {
+// A half-typed field must survive the periodic refresh.
+function dirty(body) {
+  return [...body.querySelectorAll('input')].some(i => i === document.activeElement || i.value !== (i.dataset.initial || ''));
+}
+
+function render(state, force) {
   for (const name of ['twitch', 'youtube']) {
     const p = state.platforms[name];
     const body = document.querySelector('#' + name + ' .body');
-    // Don't redraw under someone typing into a field of this section.
-    if (body.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') continue;
+    if (!force && dirty(body)) continue;
     body.textContent = '';
     body.appendChild(statusRow(p));
     if (p.detail) body.appendChild(el('div', 'note', p.detail));
@@ -111,7 +115,60 @@ function render(state) {
   }
 }
 
-async function refresh(retried) {
+let editTwitchClient = false;
+function button(label, cls, onclick) { const b = el('button', cls || '', label); b.type = 'button'; b.onclick = () => onclick(b); return b; }
+
+function clientIdForm(body, platform, current, placeholder) {
+  const row = el('div', 'row');
+  const input = el('input');
+  input.placeholder = placeholder; input.value = current || ''; input.dataset.initial = current || ''; input.spellcheck = false; input.autocomplete = 'off';
+  row.appendChild(input);
+  row.appendChild(button('Save', 'primary', async b => {
+    const was = editTwitchClient;
+    editTwitchClient = false;
+    const r = await act(`/api/setup/${platform}/client`, { clientId: input.value.trim() }, b);
+    if (!r.ok) { editTwitchClient = was; b.disabled = false; }
+  }));
+  body.appendChild(row);
+}
+
+sections.twitch = (body, p) => {
+  if (!p.available) return;
+  if (!p.clientId || editTwitchClient) {
+    body.appendChild(el('div', 'note', 'Paste the client ID of your own Twitch application (a public client — there is no secret).'));
+    clientIdForm(body, 'twitch', p.clientId, 'Twitch client ID');
+    if (p.clientId) body.appendChild(el('div', 'note', 'Saving a different client ID signs you out.'));
+    return;
+  }
+  const idNote = el('div', 'note', 'Client ID: ');
+  idNote.appendChild(el('code', '', p.clientId));
+  body.appendChild(idNote);
+  if (p.pendingError) body.appendChild(el('div', 'note bad', p.pendingError));
+  const row = el('div', 'row');
+  if (p.pending) {
+    body.appendChild(el('div', 'note', 'Open the link, check the code matches, and approve:'));
+    body.appendChild(el('div', 'big', p.pending.userCode));
+    // Only ever link to Twitch itself, whatever the response said.
+    if (/^https:\/\/(www\.)?twitch\.tv\//.test(p.pending.verificationUri)) {
+      const a = el('a', '', p.pending.verificationUri);
+      a.href = p.pending.verificationUri; a.target = '_blank'; a.rel = 'noopener';
+      body.appendChild(a);
+    } else {
+      body.appendChild(el('div', 'note', 'Go to twitch.tv/activate and enter the code.'));
+    }
+    body.appendChild(el('div', 'note', 'Waiting for approval… this page updates by itself.'));
+    row.appendChild(button('Cancel', '', b => act('/api/setup/twitch/cancel', {}, b)));
+  } else if (p.signedIn) {
+    row.appendChild(button('Sign out', '', b => act('/api/setup/twitch/signout', {}, b)));
+  } else {
+    row.appendChild(button('Sign in', 'primary', b => act('/api/setup/twitch/signin', {}, b)));
+    row.appendChild(button('Change client ID', '', () => { editTwitchClient = true; refresh(false, true); }));
+  }
+  body.appendChild(row);
+  body.appendChild(el('div', 'note', `Asks Twitch for one permission: ${p.scopes} — send chat messages as you. Nothing else.`));
+};
+
+async function refresh(retried, force) {
   try {
     if (!token) {
       const s = await fetch('/api/dock/session', { cache: 'no-store' });
@@ -120,10 +177,10 @@ async function refresh(retried) {
       token = sj.token;
     }
     const r = await api('GET', '/api/setup/state');
-    if (r.status === 403 && !retried) { token = null; return refresh(true); }
+    if (r.status === 403 && !retried) { token = null; return refresh(true, force); }
     if (!r.ok) { topEl.textContent = r.j.error || 'Refused.'; return; }
     topEl.textContent = '';
-    render(r.j);
+    render(r.j, force);
   } catch (e) {
     topEl.textContent = 'No connection to the server.';
   }
@@ -133,13 +190,12 @@ async function act(path, body, btn) {
   if (btn) btn.disabled = true;
   const r = await api('POST', path, body || {}).catch(() => ({ ok: false, j: { error: 'No connection to the server.' } }));
   topEl.textContent = r.ok ? '' : (r.j.error || 'That didn\'t work.');
-  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-  await refresh();
+  await refresh(false, r.ok);
   return r;
 }
 
 refresh();
-setInterval(refresh, 3000);
+setInterval(() => refresh(), 3000);
 </script>
 </body>
 </html>
