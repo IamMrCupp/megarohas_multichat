@@ -6,6 +6,11 @@ A local aggregator that merges **Twitch + YouTube** chats into one good-looking 
 No API keys, no OAuth, no third-party services, **zero dependencies** — a single
 Node.js process running on your own machine.
 
+> **This is a fork** of [megarohas/megarohas_multichat](https://github.com/megarohas/megarohas_multichat)
+> by megarohas — all the reading, the overlay and the panel are their work, MIT-licensed.
+> The fork adds one thing: a **reply dock**, so the streamer can answer both chats from one
+> place. Reading still needs no keys and no sign-in.
+
 - Paste your stream links — messages from both platforms show up in a single
   chat in arrival order, in real time.
 - The overlay is a plain page on `localhost` that OBS displays via a
@@ -84,6 +89,28 @@ installed Edge/Chrome/Chromium).
 
 Links are saved to `config.json` and restored on restart.
 
+## Reply dock
+
+The overlay is for viewers. The dock is for you — one page where you read both chats and
+answer from the same box.
+
+- Dock: **http://127.0.0.1:3131/dock** — in OBS, *Docks → Custom Browser Docks*, paste that URL.
+- The merged feed, no fade, with scrollback. Scroll up to read and it stops following;
+  a button takes you back to the newest line.
+- Pick **Twitch**, **YouTube** or **Both**, type, Enter. Clicking a chat line aims the reply
+  at the platform it came from.
+- Your own messages show up when the platform sends them back through the feed — there's no
+  local echo, so the dock never shows something your viewers didn't get.
+- A platform you haven't signed in to is greyed out, not hidden. Setup lives at
+  **http://127.0.0.1:3131/setup**.
+
+**Sending is local-only.** The send and setup endpoints refuse anything that isn't this
+machine: the request has to come from a loopback address, name this server in `Host`, come
+from this server's own pages (`Origin`), and carry a token the dock page gets from the
+server at load. That holds even when the server is bound to the whole LAN — the overlay
+stays reachable from another PC, replying doesn't. Open the dock from another machine and
+it's a read-only chat window.
+
 ## Overlay parameters
 
 Append them to the overlay URL, joined with `&`, for example
@@ -135,6 +162,15 @@ tools are installed into `build/node_modules` and don't affect the finished app.
 The app icon is `assets/icon.ico` (+ `public/favicon.svg` for the pages):
 to use your own, just replace the files; `build/make-icon.js` regenerates
 the default one.
+
+## Tests
+
+```bash
+npm test
+```
+
+`node:test`, no dependencies, no network — the suite starts its own throwaway servers on
+loopback.
 
 ## Limitations
 

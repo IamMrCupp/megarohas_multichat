@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>multichat — sending setup</title>
+<style>
+  :root {
+    --bg: #161310; --card: #1e1a15; --field: #131009; --line: #322a1e;
+    --ink: #f0e8da; --mut: #a5977f; --acc: #ffb454; --err: #ff7a66; --ok: #8fd460;
+    --mono: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 15px/1.5 "Segoe UI", system-ui, sans-serif;
+    max-width: 720px; margin: 0 auto; padding: 26px 18px 50px;
+  }
+  h1 { font-size: 20px; }
+  .sub { color: var(--mut); font-size: 13px; margin-top: 3px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-top: 16px; }
+  h2 { color: var(--acc); font-size: 12px; letter-spacing: 1.6px; text-transform: uppercase; margin-bottom: 10px; }
+  .status { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #777; flex: none; }
+  .dot.ok { background: var(--ok); }
+  .dot.bad { background: var(--err); }
+  .note { color: var(--mut); font-size: 13px; margin-top: 8px; }
+  .note.bad { color: var(--err); }
+  a { color: var(--acc); }
+  code, .code {
+    font-family: var(--mono); font-size: 12.5px; background: var(--field);
+    border-radius: 5px; padding: 1px 6px;
+  }
+  .big { font-family: var(--mono); font-size: 26px; letter-spacing: 3px; color: var(--acc); margin: 6px 0; }
+  .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  input {
+    flex: 1; min-width: 180px; background: var(--field); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 9px; padding: 8px 12px; font: inherit; font-family: var(--mono); font-size: 13px;
+  }
+  input:focus { outline: none; border-color: var(--acc); }
+  button {
+    background: #262019; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 9px; padding: 8px 14px; font: inherit; font-size: 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--acc); }
+  button.primary { background: var(--acc); border-color: var(--acc); color: #241a09; font-weight: 700; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  table { border-collapse: collapse; margin-top: 8px; font-size: 13.5px; }
+  td { padding: 4px 14px 4px 0; border-top: 1px solid var(--line); }
+  tr:first-child td { border-top: 0; }
+  td.n { font-family: var(--mono); color: var(--acc); text-align: right; }
+  #top { color: var(--err); font-size: 13.5px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<h1>Sending setup</h1>
+<div class="sub">Reading chat needs no sign-in. Replying does — one platform at a time, each optional.
+  Steps: <a href="https://github.com/IamMrCupp/megarohas_multichat/blob/main/docs/SETUP-SENDING.md" target="_blank" rel="noopener">docs/SETUP-SENDING.md</a></div>
+<div id="top"></div>
+
+<div class="card" id="twitch"><h2>Twitch</h2><div class="body"></div></div>
+<div class="card" id="youtube"><h2>YouTube</h2><div class="body"></div></div>
+
+<div class="note">This page only works in a browser on the machine the server runs on. Tokens stay in a file
+  beside <code>config.json</code>; they're never sent to this page or to the dock.</div>
+
+<script>
+'use strict';
+const LABEL = { twitch: 'Twitch', youtube: 'YouTube' };
+const topEl = document.getElementById('top');
+let token = null;
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+async function api(method, path, body) {
+  const r = await fetch(path, {
+    method, cache: 'no-store',
+    headers: { 'x-dock-token': token || '', ...(body ? { 'content-type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const j = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, j };
+}
+
+function statusRow(p) {
+  const row = el('div', 'status');
+  row.appendChild(el('span', 'dot ' + (p.signedIn ? 'ok' : (p.available ? '' : 'bad'))));
+  row.appendChild(el('span', '', p.signedIn ? `Signed in as ${p.as || '?'}` : (p.available ? 'Not signed in' : 'Not available')));
+  return row;
+}
+
+// Platform sections add their own controls by registering here.
+const sections = {};
+
+function render(state) {
+  for (const name of ['twitch', 'youtube']) {
+    const p = state.platforms[name];
+    const body = document.querySelector('#' + name + ' .body');
+    // Don't redraw under someone typing into a field of this section.
+    if (body.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') continue;
+    body.textContent = '';
+    body.appendChild(statusRow(p));
+    if (p.detail) body.appendChild(el('div', 'note', p.detail));
+    if (p.signedIn) {
+      body.appendChild(el('div', 'note', p.connected
+        ? `Replies go to: ${p.target || LABEL[name]}`
+        : `No ${LABEL[name]} chat is connected in the panel yet — add your stream link there.`));
+    }
+    if (sections[name]) sections[name](body, p);
+  }
+}
+
+async function refresh(retried) {
+  try {
+    if (!token) {
+      const s = await fetch('/api/dock/session', { cache: 'no-store' });
+      const sj = await s.json().catch(() => ({}));
+      if (!s.ok) { topEl.textContent = sj.error || 'Refused.'; return; }
+      token = sj.token;
+    }
+    const r = await api('GET', '/api/setup/state');
+    if (r.status === 403 && !retried) { token = null; return refresh(true); }
+    if (!r.ok) { topEl.textContent = r.j.error || 'Refused.'; return; }
+    topEl.textContent = '';
+    render(r.j);
+  } catch (e) {
+    topEl.textContent = 'No connection to the server.';
+  }
+}
+
+async function act(path, body, btn) {
+  if (btn) btn.disabled = true;
+  const r = await api('POST', path, body || {}).catch(() => ({ ok: false, j: { error: 'No connection to the server.' } }));
+  topEl.textContent = r.ok ? '' : (r.j.error || 'That didn\'t work.');
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  await refresh();
+  return r;
+}
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

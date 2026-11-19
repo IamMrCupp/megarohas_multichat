@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>multichat — dock</title>
+<style>
+  :root {
+    --bg: #161310; --card: #1e1a15; --field: #131009; --line: #322a1e;
+    --ink: #f0e8da; --mut: #a5977f; --acc: #ffb454; --err: #ff7a66; --ok: #8fd460;
+    --tw: #a970ff; --yt: #ff5a4d;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.4 "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  #feedwrap { position: relative; flex: 1; min-height: 0; }
+  #feed { height: 100%; overflow-y: auto; padding: 6px 8px; overflow-wrap: anywhere; }
+  .line { padding: 3px 4px; border-radius: 6px; cursor: pointer; border-left: 2px solid transparent; }
+  .line:hover { background: #221d16; }
+  .line.twitch { border-left-color: #9147ff66; }
+  .line.youtube { border-left-color: #ff3d3d66; }
+  .line.system, .line.member { color: var(--mut); font-style: italic; }
+  .line.super { background: #2a2111; }
+  .line .time { color: #6d6250; font-size: 11px; margin-right: 5px; font-variant-numeric: tabular-nums; }
+  .line svg.platform, .line svg.badge { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; }
+  .line img.badge { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; }
+  .line img.emote { height: 20px; vertical-align: -5px; margin: 0 1px; }
+  .line img.sticker { height: 48px; display: block; margin-top: 3px; }
+  .line .name { font-weight: 600; margin-right: 5px; }
+  .line .amount { color: var(--acc); font-weight: 700; margin-right: 5px; }
+  #jump {
+    position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%);
+    background: var(--acc); color: #241a09; border: 0; border-radius: 999px;
+    padding: 4px 12px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+  }
+  #empty { color: var(--mut); padding: 14px 8px; font-size: 13px; }
+  #composer { border-top: 1px solid var(--line); background: var(--card); padding: 7px 8px 8px; }
+  #picker { display: flex; gap: 5px; margin-bottom: 6px; }
+  #picker button {
+    flex: 1; min-width: 0; background: #262019; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 8px; padding: 5px 4px;
+    font: inherit; font-size: 12.5px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #picker button.on { border-color: var(--acc); background: #33291a; color: var(--acc); font-weight: 700; }
+  #picker button.off { opacity: 0.42; cursor: not-allowed; }
+  #row { display: flex; gap: 6px; }
+  #text {
+    flex: 1; min-width: 0; background: var(--field); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; font: inherit;
+  }
+  #text:focus { outline: none; border-color: var(--acc); }
+  #send {
+    background: var(--acc); color: #241a09; border: 0; border-radius: 8px;
+    padding: 0 12px; font: inherit; font-weight: 700; cursor: pointer;
+  }
+  #send:disabled, #text:disabled { opacity: 0.5; cursor: not-allowed; }
+  #state { min-height: 17px; margin-top: 5px; font-size: 12px; color: var(--mut); }
+  #state .ok { color: var(--ok); }
+  #state .bad { color: var(--err); }
+  #state a { color: var(--acc); }
+  #state span + span::before { content: " · "; color: var(--mut); }
+</style>
+</head>
+<body>
+<div id="feedwrap">
+  <div id="feed"><div id="empty">No messages yet. Add your stream links in the <a href="/" target="_blank" rel="noopener" style="color:var(--acc)">panel</a>.</div></div>
+  <button id="jump" hidden>New messages ↓</button>
+</div>
+<form id="composer" autocomplete="off">
+  <div id="picker">
+    <button type="button" data-t="twitch">Twitch</button>
+    <button type="button" data-t="youtube">YouTube</button>
+    <button type="button" data-t="both">Both</button>
+  </div>
+  <div id="row">
+    <input id="text" maxlength="500" placeholder="Reply…" spellcheck="true">
+    <button id="send">Send</button>
+  </div>
+  <div id="state"></div>
+</form>
+<script>
+'use strict';
+const LIMIT = 500;                 // lines kept for scrollback
+const LABEL = { twitch: 'Twitch', youtube: 'YouTube', both: 'Both' };
+const feed = document.getElementById('feed');
+const emptyEl = document.getElementById('empty');
+const jump = document.getElementById('jump');
+const stateEl = document.getElementById('state');
+const textEl = document.getElementById('text');
+const sendBtn = document.getElementById('send');
+const pickBtns = [...document.querySelectorAll('#picker button')];
+const byId = new Map();
+
+const P_ICONS = {
+  twitch: '<svg class="platform" viewBox="0 0 24 24" fill="#a970ff" xmlns="http://www.w3.org/2000/svg"><path d="M2.149 0 .537 4.119v16.836h5.731V24h3.224l3.045-3.045h4.657l6.269-6.269V0H2.149zm19.164 13.612-3.582 3.582h-5.731l-3.045 3.045v-3.045H4.283V2.149h17.03v11.463zM17.687 6.269h-2.149v6.269h2.149V6.269zm-5.731 0h-2.149v6.269h2.149V6.269z"/></svg>',
+  youtube: '<svg class="platform" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="5" width="20" height="14" rx="4" fill="#ff3d3d"/><path d="M10 9.2v5.6l5-2.8z" fill="#fff"/></svg>',
+};
+const R_ICONS = {
+  owner: '<svg class="badge" viewBox="0 0 24 24" fill="#ffd166" xmlns="http://www.w3.org/2000/svg"><path d="M12 4 8.6 9.2 3 6.4 5 18h14l2-11.6-5.6 2.8zM5.7 21h12.6v-1.6H5.7z"/></svg>',
+  mod: '<svg class="badge" viewBox="0 0 24 24" fill="#57aeff" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 4 5v6.1C4 16 7.4 20.4 12 22c4.6-1.6 8-6 8-10.9V5z"/></svg>',
+  vip: '<svg class="badge" viewBox="0 0 24 24" fill="#f06fc0" xmlns="http://www.w3.org/2000/svg"><path d="M12 3 4 9.2 12 21l8-11.8z"/></svg>',
+  sub: '<svg class="badge" viewBox="0 0 24 24" fill="#b072ff" xmlns="http://www.w3.org/2000/svg"><path d="m12 2 2.9 6.2 6.6.9-4.9 4.6 1.3 6.6L12 17l-5.9 3.3 1.3-6.6L2.5 9.1l6.6-.9z"/></svg>',
+  verified: '<svg class="badge" viewBox="0 0 24 24" fill="#9aa0a6" xmlns="http://www.w3.org/2000/svg"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1.2 14.6-4.2-4.2 1.7-1.7 2.5 2.5 5.9-5.9 1.7 1.7z"/></svg>',
+  staff: '<svg class="badge" viewBox="0 0 24 24" fill="#9aa0a6" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 4 5v6.1C4 16 7.4 20.4 12 22c4.6-1.6 8-6 8-10.9V5z"/></svg>',
+  member: '<svg class="badge" viewBox="0 0 24 24" fill="#2ba640" xmlns="http://www.w3.org/2000/svg"><path d="M12 21S3 14.7 3 8.9C3 5.9 5.4 4 7.9 4c1.6 0 3.1.8 4.1 2.1C13 4.8 14.5 4 16.1 4 18.6 4 21 5.9 21 8.9 21 14.7 12 21 12 21z"/></svg>',
+};
+const PALETTE = [];
+for (let hue = 0; hue < 360; hue += 18) PALETTE.push(`hsl(${hue} 58% 68%)`);
+function autoColor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return PALETTE[h % PALETTE.length];
+}
+function okUrl(u) { return typeof u === 'string' && /^https:\/\//.test(u); }
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function icon(html) { const s = el('span'); s.innerHTML = html; return s.firstChild; }   // constants above only
+function fmtTime(ts) { const d = new Date(ts); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
+
+// ---------- feed ----------
+function buildLine(m) {
+  const div = el('div', 'line ' + (m.platform || '') + ' ' + (m.kind || 'chat'));
+  div.dataset.id = m.id;
+  div.dataset.src = m.source || '';
+  div.dataset.platform = m.platform || '';
+  if (m.author && m.author.key) div.dataset.key = m.author.key;
+  div.appendChild(el('span', 'time', fmtTime(m.ts || Date.now())));
+  if (P_ICONS[m.platform]) div.appendChild(icon(P_ICONS[m.platform]));
+  if (m.kind === 'system') { div.appendChild(el('span', 'text', m.system || '')); return div; }
+  const a = m.author || { name: '?', roles: [] };
+  for (const role of a.roles || []) {
+    if (role === 'member' && okUrl(a.badgeUrl)) {
+      const img = el('img', 'badge'); img.src = a.badgeUrl; img.onerror = () => img.remove(); div.appendChild(img);
+    } else if (R_ICONS[role]) div.appendChild(icon(R_ICONS[role]));
+  }
+  const name = el('span', 'name', a.name || '?');
+  name.style.color = a.color || autoColor(a.name || '?');
+  div.appendChild(name);
+  if (m.amount) div.appendChild(el('span', 'amount', m.amount));
+  if (m.system) div.appendChild(el('span', 'text', m.system + ' '));
+  for (const p of m.parts || []) {
+    if (p.t === 'text') div.appendChild(el('span', 'text', p.v));
+    else if (p.t === 'emote' && okUrl(p.url)) {
+      const img = el('img', 'emote');
+      img.src = p.url; img.alt = img.title = p.alt || '';
+      img.onerror = () => img.replaceWith(document.createTextNode(p.alt || ''));
+      div.appendChild(img);
+    }
+  }
+  if (okUrl(m.sticker)) { const img = el('img', 'sticker'); img.src = m.sticker; img.onerror = () => img.remove(); div.appendChild(img); }
+  return div;
+}
+
+function atBottom() { return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40; }
+function toBottom() { feed.scrollTop = feed.scrollHeight; jump.hidden = true; }
+
+function add(m, quiet) {
+  if (!m || !m.id || byId.has(m.id)) return;
+  const stick = atBottom();
+  emptyEl.hidden = true;
+  const line = buildLine(m);
+  byId.set(m.id, line);
+  feed.appendChild(line);
+  // Scrolled up to read? Leave the view alone and trim nothing under the reader.
+  if (stick) {
+    while (byId.size > LIMIT) {
+      const first = feed.querySelector('.line');
+      if (!first) break;
+      byId.delete(first.dataset.id); first.remove();
+    }
+    toBottom();
+  } else if (!quiet) jump.hidden = false;
+}
+function drop(line) { byId.delete(line.dataset.id); line.remove(); }
+function removeWhere(pred) { for (const n of [...feed.querySelectorAll('.line')]) if (pred(n)) drop(n); }
+
+feed.addEventListener('scroll', () => { if (atBottom()) jump.hidden = true; });
+jump.onclick = toBottom;
+feed.addEventListener('click', e => {
+  const line = e.target.closest('.line');
+  if (!line || !line.dataset.platform) return;
+  pick(line.dataset.platform, true);
+  textEl.focus();
+});
+
+const es = new EventSource('/events');
+es.onmessage = e => {
+  let d;
+  try { d = JSON.parse(e.data); } catch (err) { return; }
+  switch (d.type) {
+    case 'hello':
+      removeWhere(() => true);
+      for (const m of d.history || []) add(m, true);
+      toBottom();
+      break;
+    case 'msg': add(d); break;
+    case 'remove': removeWhere(n => n.dataset.id === d.id); break;
+    case 'removeAuthor': removeWhere(n => n.dataset.src === d.source && n.dataset.key === d.key); break;
+    case 'clear': removeWhere(n => !d.source || n.dataset.src === d.source); break;
+    case 'status': refreshSession(); break;
+  }
+};
+
+// ---------- sending ----------
+// No local echo: what I sent shows up when the platform hands it back through
+// the same feed the viewers' overlay reads, or it doesn't show up at all.
+let token = null;
+let platforms = null;       // from /api/dock/session
+let target = null;
+let localOnly = false;      // this page was opened from another machine
+let busy = false;
+try { target = localStorage.getItem('dock.target'); } catch (e) {}
+
+function usable(t) {
+  if (!platforms) return false;
+  const one = p => platforms[p] && platforms[p].signedIn && platforms[p].connected;
+  return t === 'both' ? one('twitch') && one('youtube') : one(t);
+}
+function whyNot(t) {
+  if (localOnly) return 'Sending only works from the machine the server runs on.';
+  if (!platforms) return 'No connection to the server.';
+  if (t === 'both') return whyNot(!usableOne('twitch') ? 'twitch' : 'youtube');
+  const p = platforms[t];
+  if (!p.available) return p.detail;
+  if (!p.signedIn) return `Not signed in to ${LABEL[t]}.`;
+  if (!p.connected) return `No ${LABEL[t]} chat is connected in the panel.`;
+  return '';
+}
+function usableOne(p) { return usable(p); }
+
+function renderPicker() {
+  if (!usable(target)) target = ['twitch', 'youtube'].find(usable) || target;
+  for (const b of pickBtns) {
+    const t = b.dataset.t;
+    const ok = usable(t);
+    b.classList.toggle('off', !ok);
+    b.classList.toggle('on', ok && t === target);
+    const p = platforms && platforms[t];
+    b.textContent = LABEL[t];
+    b.title = ok
+      ? (t === 'both' ? 'Send to both chats' : `Send to ${p.target || LABEL[t]}` + (p.as ? ` as ${p.as}` : ''))
+      : whyNot(t);
+  }
+  const can = usable(target) && !busy;
+  textEl.disabled = !usable(target);
+  sendBtn.disabled = !can;
+  textEl.placeholder = usable(target)
+    ? (target === 'both' ? 'Reply to both chats…' : `Reply on ${LABEL[target]}…`)
+    : 'Sending is off — see below';
+}
+
+function say(parts) {
+  stateEl.textContent = '';
+  for (const p of parts) {
+    const s = el('span', p.cls || '', p.text);
+    if (p.setup) { s.append(' '); const a = el('a', '', 'Open setup'); a.href = '/setup'; a.target = '_blank'; a.rel = 'noopener'; s.appendChild(a); }
+    stateEl.appendChild(s);
+  }
+}
+
+function pick(t, fromLine) {
+  if (!usable(t)) {
+    const needsSetup = platforms && platforms[t === 'both' ? (usable('twitch') ? 'youtube' : 'twitch') : t];
+    say([{ cls: 'bad', text: whyNot(t), setup: !localOnly && !!needsSetup && !needsSetup.signedIn && needsSetup.available }]);
+    return;
+  }
+  target = t;
+  try { localStorage.setItem('dock.target', t); } catch (e) {}
+  if (!fromLine) say([]);
+  renderPicker();
+}
+for (const b of pickBtns) b.onclick = () => pick(b.dataset.t);
+
+async function refreshSession() {
+  try {
+    const r = await fetch('/api/dock/session', { cache: 'no-store' });
+    if (r.status === 403) {
+      const j = await r.json().catch(() => ({}));
+      localOnly = j.code === 'not_loopback' || j.code === 'bad_host' || j.code === 'proxied';
+      token = null; platforms = null;
+      say([{ cls: 'bad', text: localOnly ? 'Read-only here — sending only works from the machine the server runs on.' : (j.error || 'Sending refused.') }]);
+    } else {
+      const j = await r.json();
+      token = j.token; platforms = j.platforms; localOnly = false;
+      if (!['twitch', 'youtube'].some(usable) && !stateEl.textContent) {
+        const p = ['twitch', 'youtube'].find(x => platforms[x].available && !platforms[x].signedIn);
+        say([{ text: p ? 'Not signed in.' : 'Sending isn\'t set up.', setup: !!p }]);
+      }
+    }
+  } catch (e) {
+    platforms = null;
+    say([{ cls: 'bad', text: 'No connection to the server.' }]);
+  }
+  renderPicker();
+}
+
+function resultPart(p, r) {
+  if (r.ok) return { cls: 'ok', text: `${LABEL[p]}: sent` };
+  let text = `${LABEL[p]}: ${r.code === 'not_signed_in' ? 'not signed in' : 'failed — ' + r.reason}`;
+  if (r.retryAfter) text += ` (try again in ${Math.ceil(r.retryAfter)}s)`;
+  return { cls: 'bad', text, setup: r.code === 'not_signed_in' };
+}
+
+document.getElementById('composer').addEventListener('submit', async e => {
+  e.preventDefault();
+  const text = textEl.value.trim();
+  if (!text || busy || !usable(target)) return;
+  busy = true; renderPicker();
+  say([{ text: 'Sending…' }]);
+  try {
+    let r = await post(text);
+    if (r.status === 403) {            // server restarted: new token, one more go
+      await refreshSession();
+      if (token) r = await post(text);
+    }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.results) {
+      say([{ cls: 'bad', text: 'Not sent — ' + (j.error || 'HTTP ' + r.status) }]);
+    } else {
+      const names = Object.keys(j.results);
+      say(names.map(p => resultPart(p, j.results[p])));
+      const failed = names.filter(p => !j.results[p].ok);
+      if (!failed.length) textEl.value = '';
+      // One of two went through: keep the text and aim at the one that didn't,
+      // so Enter retries that chat only instead of double-posting to the other.
+      else if (failed.length < names.length && usable(failed[0])) target = failed[0];
+    }
+  } catch (err) {
+    say([{ cls: 'bad', text: 'Not sent — no connection to the server.' }]);
+  }
+  busy = false;
+  await refreshSession();
+  textEl.focus();
+});
+
+function post(text) {
+  return fetch('/api/send', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-dock-token': token || '' },
+    body: JSON.stringify({ target, text }),
+  });
+}
+
+refreshSession();
+setInterval(refreshSession, 15000);
+</script>
+</body>
+</html>

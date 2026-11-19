@@ -10,6 +10,7 @@ const { spawn, spawnSync } = require('child_process');
 const VERSION = require('./package.json').version;
 const { TwitchSource, channelFromUrl } = require('./lib/twitch');
 const { YouTubeSource } = require('./lib/youtube');
+const { createSendApi } = require('./lib/sendapi');
 
 // Когда приложение собрано в единый исполняемый файл (Node SEA, см.
 // build/build.js), статика отдаётся из встроенных ассетов, а изменяемые
@@ -21,7 +22,9 @@ try {
 } catch (e) {}
 
 const ROOT = __dirname;
-const APP_DIR = sea ? path.dirname(process.execPath) : ROOT;
+// MULTICHAT_DIR moves the mutable files (config.json, fonts, error.log) somewhere
+// else — the tests use it to run a throwaway copy without touching real config.
+const APP_DIR = process.env.MULTICHAT_DIR || (sea ? path.dirname(process.execPath) : ROOT);
 const PUBLIC = path.join(ROOT, 'public');
 const FONTS_DIR = path.join(APP_DIR, 'fonts');
 const CONFIG_PATH = path.join(APP_DIR, 'config.json');
@@ -205,6 +208,29 @@ function reconnectSource(id) {
   return true;
 }
 
+// ---------- sending (the dock) ----------
+// Reading stays anonymous and open. Everything that writes to an account goes
+// through lib/sendapi.js, which refuses anything that isn't this machine.
+// The reply target is the first connected source of each platform.
+function sendTargets() {
+  const out = { twitch: null, youtube: null };
+  for (const s of sources.values()) {
+    if (!s.adapter) continue;
+    if (s.platform === 'twitch' && !out.twitch) out.twitch = { channel: s.adapter.channel };
+    if (s.platform === 'youtube' && (!out.youtube || (!out.youtube.videoId && s.adapter.videoId))) {
+      out.youtube = { videoId: s.adapter.videoId || null, channel: s.channel };
+    }
+  }
+  return out;
+}
+
+const sendApi = createSendApi({
+  getPort: () => actualPort,
+  getTargets: sendTargets,
+  senders: {},
+  log: logErr,
+});
+
 // ---------- test messages (style the overlay without being live) ----------
 let testN = 0;
 function testMessages() {
@@ -285,8 +311,11 @@ const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x');
   const p = u.pathname;
   try {
+    if (await sendApi.handle(req, res, u)) return;
     if (req.method === 'GET') {
       if (p === '/') return serveFile(res, 'panel.html');
+      if (p === '/dock') return serveFile(res, 'dock.html');
+      if (p === '/setup') return serveFile(res, 'setup.html');
       if (p === '/overlay') return serveFile(res, 'overlay.html');
       if (p === '/overlay.css') return serveFile(res, 'overlay.css');
       if (p === '/favicon.svg') return serveFile(res, 'favicon.svg');
@@ -380,6 +409,7 @@ function printBanner() {
   console.log('megarohas_multichat запущен:');
   console.log(`  Панель управления: http://127.0.0.1:${actualPort}/`);
   console.log(`  Оверлей для OBS:   http://127.0.0.1:${actualPort}/overlay`);
+  console.log(`  Reply dock:        http://127.0.0.1:${actualPort}/dock`);
   for (const o of lanOrigins()) {
     console.log(`  По локальной сети: ${o}/  (панель)  ·  ${o}/overlay`);
   }
