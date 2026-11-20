@@ -45,13 +45,22 @@ function request(port, { method = 'GET', path = '/', headers = {}, body } = {}) 
 }
 
 // A send API on its own little server, the way server.js mounts it.
-async function startApp({ senders = {}, targets, remoteAddress } = {}) {
+// Reply targets in the shape lib/targets.js hands to the send API.
+const TARGETS = {
+  twitch: { pinned: true, sourceId: 'aaaa1111', channel: 'examplechannel', label: '#examplechannel', key: 'aaaa1111:examplechannel', choices: [{ id: 'aaaa1111', label: '#examplechannel' }] },
+  youtube: { pinned: true, sourceId: 'bbbb2222', videoId: 'FAKEvideo01', channel: 'Example Channel', label: 'Example Channel · video FAKEvideo01', key: 'bbbb2222:FAKEvideo01', choices: [{ id: 'bbbb2222', label: 'Example Channel' }] },
+};
+
+async function startApp({ senders = {}, targets, remoteAddress, setTarget, ...more } = {}) {
   let port = 0;
+  const current = () => (typeof targets === 'function' ? targets() : (targets || TARGETS));
   const api = createSendApi({
     getPort: () => port,
-    getTargets: () => (typeof targets === 'function' ? targets() : (targets || { twitch: { channel: 'examplechannel' }, youtube: { videoId: 'FAKEvideo01', channel: 'Example Channel' } })),
+    getTargets: current,
+    setTarget,
     senders,
     remoteAddress,
+    ...more,
   });
   const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, 'http://x');
@@ -64,20 +73,28 @@ async function startApp({ senders = {}, targets, remoteAddress } = {}) {
     port, origin, token: api.token, api,
     close: () => close(server),
     // a well-formed request from the dock page
-    post: (path, body, headers = {}) => request(port, {
-      method: 'POST', path, body,
-      headers: { origin, 'x-dock-token': api.token, ...headers },
-    }),
+    // For /api/send it fills in `expect` the way the dock does: the target
+    // keys currently on show. Pass expect yourself to test a stale page.
+    post: (path, body, headers = {}) => {
+      if (path === '/api/send' && body && typeof body === 'object' && body.expect === undefined) {
+        const t = current();
+        const expect = {};
+        for (const p of ['twitch', 'youtube']) if (t[p] && t[p].pinned) expect[p] = t[p].key;
+        body = { ...body, expect };
+      }
+      return request(port, { method: 'POST', path, body, headers: { origin, 'x-dock-token': api.token, ...headers } });
+    },
     get: (path, headers = {}) => request(port, { path, headers: { 'x-dock-token': api.token, ...headers } }),
   };
 }
 
 // The fake sender the dock is tested against: records what it was asked to
 // send and answers however the test tells it to.
-function fakeSender({ signedIn = true, as = 'example_user', reply } = {}) {
+function fakeSender({ signedIn = true, as = 'example_user', reply, maxLength } = {}) {
   const sent = [];
   return {
     sent,
+    ...(maxLength ? { maxLength } : {}),
     signedIn,
     status() { return { configured: true, signedIn: this.signedIn, as: this.signedIn ? as : null, detail: '' }; },
     async send(text, target) {
@@ -124,10 +141,11 @@ function freePort() {
   });
 }
 
-async function startServer(t, extraConfig = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multichat-test-'));
+// Pass shareDir to start a second copy in a folder a first one already uses.
+async function startServer(t, extraConfig = {}, shareDir = null) {
+  const dir = shareDir || fs.mkdtempSync(path.join(os.tmpdir(), 'multichat-test-'));
   const want = await freePort();
-  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ host: '127.0.0.1', port: want, sources: [], ...extraConfig }));
+  if (!shareDir) fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ host: '127.0.0.1', port: want, sources: [], ...extraConfig }));
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
     env: { ...process.env, MULTICHAT_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -145,10 +163,10 @@ async function startServer(t, extraConfig = {}) {
   });
   t.after(() => new Promise(resolve => {
     child.removeAllListeners('exit');
-    child.on('exit', () => { fs.rmSync(dir, { recursive: true, force: true }); resolve(); });
+    child.on('exit', () => { if (!shareDir) fs.rmSync(dir, { recursive: true, force: true }); resolve(); });
     child.kill();
   }));
   return { port, dir, origin: `http://127.0.0.1:${port}`, output: () => out };
 }
 
-module.exports = { startServer, listen, close, request, startApp, fakeSender, fakeUpstream };
+module.exports = { TARGETS, startServer, listen, close, request, startApp, fakeSender, fakeUpstream };

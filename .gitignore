@@ -7,6 +7,8 @@ error.log
 # sign-in tokens and client secrets for the reply dock — never commit
 secrets.json
 .secrets.json.*.tmp
+secrets.json.broken-*
+sending.lock
 .window-profile/
 
 # шрифты пользователь кидает сам

@@ -255,14 +255,14 @@ function renderRows(list) {
     re.className = 'icon';
     re.textContent = '⟳';
     re.title = 'Переподключить';
-    re.onclick = () => fetch('/api/sources/' + s.id + '/reconnect', { method: 'POST' }).then(refresh, refresh);
+    re.onclick = () => write('/api/sources/' + s.id + '/reconnect', { method: 'POST' }).then(refresh, refresh);
     row.appendChild(re);
 
     const del = document.createElement('button');
     del.className = 'icon';
     del.textContent = '✕';
     del.title = 'Удалить';
-    del.onclick = () => fetch('/api/sources/' + s.id, { method: 'DELETE' }).then(refresh, refresh);
+    del.onclick = () => write('/api/sources/' + s.id, { method: 'DELETE' }).then(refresh, refresh);
     row.appendChild(del);
 
     rows.appendChild(row);
@@ -303,6 +303,24 @@ function renderUrls(state) {
   }
 }
 
+// The panel's controls are gated like sending: this machine, this page, and the
+// session token. write() fetches the token once and retries once if the server restarted.
+let dockToken = null;
+async function write(path, opts = {}) {
+  for (let attempt = 0; ; attempt++) {
+    if (!dockToken) {
+      try { const s = await fetch('/api/dock/session', { cache: 'no-store' }); if (s.ok) dockToken = (await s.json()).token; } catch (e) {}
+    }
+    const r = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), 'x-dock-token': dockToken || '' } });
+    if (r.status !== 403) { errEl.textContent = ''; return r; }
+    dockToken = null;
+    if (attempt > 0) {
+      errEl.textContent = 'Changes only work in a browser on the machine the server runs on.';
+      return r;
+    }
+  }
+}
+
 // Не полагаемся на один только SSE-пуш: любые действия сразу
 // подтягивают свежий список, плюс страховочный периодический рефреш.
 async function refresh() {
@@ -324,13 +342,14 @@ document.getElementById('add').addEventListener('submit', async e => {
   if (!url) return;
   errEl.textContent = '';
   try {
-    const r = await fetch('/api/sources', {
+    const r = await write('/api/sources', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ url }),
     });
     const j = await r.json();
-    if (j.error) errEl.textContent = j.error;
+    if (r.status === 403) { /* write() already said why */ }
+    else if (j.error) errEl.textContent = j.error;
     else input.value = '';
   } catch (err) {
     errEl.textContent = 'Сервер не отвечает';
@@ -339,8 +358,8 @@ document.getElementById('add').addEventListener('submit', async e => {
 });
 
 document.getElementById('openOverlay').onclick = () => window.open(overlayUrl, '_blank');
-document.getElementById('test').onclick = () => fetch('/api/test', { method: 'POST' });
-document.getElementById('clear').onclick = () => fetch('/api/clear', { method: 'POST' });
+document.getElementById('test').onclick = () => write('/api/test', { method: 'POST' });
+document.getElementById('clear').onclick = () => write('/api/clear', { method: 'POST' });
 
 refresh();
 setInterval(refresh, 15000);

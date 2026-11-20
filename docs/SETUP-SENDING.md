@@ -8,6 +8,41 @@ Everything below happens on the machine the server runs on, in an ordinary brows
 **http://127.0.0.1:3131/setup** (use your port if you changed it). The setup page and the
 send endpoints refuse requests from anywhere else.
 
+## What "local-only" does and doesn't cover
+
+Sending, signing in, and the panel's controls are refused unless the request comes from a
+loopback address, names this server in `Host`, comes from this server's own pages (`Origin`),
+and carries the session token. That stops another device on the network, and it stops a web
+page in your browser — including one that points its own domain at `127.0.0.1`.
+
+**It does not stop another program on this machine.** The dock gets its token by asking the
+server for it, and any local process can ask the same way: a script, or another user account
+on a shared computer. That other account can't read `secrets.json` (it's `0600`), but it can
+ask this server to send chat as you.
+
+So: run this on a machine where you're the only user, or where you trust the others. That's
+a real limit, not a rounding error. A fix that keeps the OBS dock working — a secret only
+your account can read, carried in the dock's URL — is written up in
+[#10](https://github.com/IamMrCupp/megarohas_multichat/issues/10) and not built yet.
+
+A program running as *you* can read `secrets.json` directly. Nothing this server does can
+prevent that; it's the same exposure as any saved login.
+
+### One copy sends
+
+If the port is taken the server starts on the next free one — so it's possible to end up
+with two copies running from the same folder. Only the first one sends. The second still
+reads chat and serves the overlay, and says on its console, its dock and its setup page that
+sending is off and which process owns it. Twitch's refresh tokens are single-use; two copies
+taking turns with one would sign each other out.
+
+### If `secrets.json` gets damaged
+
+A file that can't be parsed is moved aside to `secrets.json.broken-<timestamp>` (still
+`0600`), the setup page says so, and you sign in again. Nothing is overwritten in place. A
+file that can't be *read* — wrong owner, say — is left alone: the setup page reports it and
+sending stays off until you fix the permissions.
+
 ## Twitch
 
 You create a Twitch application once. It's a **public** client, so there's no secret — just
@@ -38,8 +73,9 @@ Twitch's own walkthrough: <https://dev.twitch.tv/docs/authentication/register-ap
    chat as — your channel account, normally.
 5. The setup page flips to **Signed in as _you_** by itself. Done.
 
-The dock's Twitch button is live from that moment. Replies go to the first Twitch channel in
-the panel's source list.
+The dock's Twitch button is live from that moment. The dock shows where a reply will go —
+`Twitch → #yourchannel (as you)`. That's the first Twitch source you added; if you follow more
+than one, pick the reply target in the dock. It never changes by itself.
 
 ### What it asks for, and what it stores
 
