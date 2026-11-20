@@ -9,7 +9,7 @@ const os = require('os');
 const path = require('path');
 const { SecretStore } = require('../lib/tokens');
 const { YouTubeSender, msUntilPacificMidnight } = require('../lib/youtube-send');
-const { fakeUpstream, startApp, request } = require('./helpers');
+const { fakeUpstream, startApp, request, fakeSender } = require('./helpers');
 
 const CLIENT_ID = '000000000000-fakefakefakefake.apps.googleusercontent.com';
 const CLIENT_SECRET = 'FAKE_CLIENT_SECRET_do_not_use';
@@ -325,4 +325,112 @@ test('over HTTP: gated, and no token, secret, code or verifier in any response',
   for (const secret of ['FAKE_YT_ACCESS_', 'FAKE_YT_REFRESH_', CLIENT_SECRET, c.state.code, c.state.verifier]) {
     assert.ok(!all.includes(secret), secret);
   }
+});
+
+// ---------- review fixes ----------
+
+// Hold Google's answer to the next refresh until release() is called.
+function holdRefresh(t) {
+  let release, seenIt;
+  const held = new Promise(r => { release = r; });
+  const seen = new Promise(r => { seenIt = r; });
+  const realFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    const isRefresh = String(url).endsWith('/token') && String(opts && opts.body).includes('grant_type=refresh_token');
+    if (isRefresh) seenIt();
+    const r = await realFetch(url, opts);
+    if (isRefresh) await held;
+    return r;
+  };
+  t.after(() => { global.fetch = realFetch; });
+  return { release, seen };
+}
+
+test('a refresh in flight when I sign out does not sign me back in', async t => {
+  const c = await setup(t);
+  const hold = holdRefresh(t);
+  c.clock.t += (3599 - 60) * 1000;
+  const sending = c.sender.send('x', TARGET);
+  await hold.seen;
+  await c.app.post('/api/setup/youtube/signout', {});
+  hold.release();
+  assert.equal((await sending).code, 'not_signed_in');
+  assert.equal(c.sender.status().signedIn, false);
+  assert.deepEqual(c.saved(), { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET });
+  assert.equal(c.up.count('POST /youtube/v3/liveChat/messages'), 0);
+});
+
+test('a refresh in flight when the client changes does not put the old client back', async t => {
+  const c = await setup(t);
+  const hold = holdRefresh(t);
+  c.clock.t += (3599 - 60) * 1000;
+  const sending = c.sender.send('x', TARGET);
+  await hold.seen;
+  const other = { clientId: '111111111111-otherfakeclient.apps.googleusercontent.com', clientSecret: 'FAKE_OTHER_SECRET' };
+  await c.app.post('/api/setup/youtube/client', other);
+  hold.release();
+  assert.equal((await sending).ok, false);
+  assert.deepEqual(c.saved(), other);              // not the old client, and no tokens
+  assert.equal(c.sender.status().signedIn, false);
+});
+
+test('the client changing while the browser is at Google cancels that sign-in', async t => {
+  const c = await setup(t, { signIn: false });
+  const auth = await c.begin();
+  // _setClient clears the pending sign-in, so the callback no longer knows the state
+  await c.app.post('/api/setup/youtube/client', { clientId: '111111111111-otherfakeclient.apps.googleusercontent.com', clientSecret: 'FAKE_OTHER_SECRET' });
+  const r = await c.comeBack({ state: auth.searchParams.get('state'), code: c.state.code });
+  assert.equal(r.status, 400);
+  assert.equal(c.up.count('POST /token'), 0);
+  assert.equal(c.saved().refreshToken, undefined);
+});
+
+test('callback: a non-ASCII or wrong-length state gets the 400 page, not an exception', async t => {
+  const c = await setup(t, { signIn: false });
+  const auth = await c.begin();
+  const good = auth.searchParams.get('state');
+  // same number of characters, more bytes — the case that used to throw inside timingSafeEqual
+  const sameChars = 'é'.repeat(good.length);
+  assert.equal(sameChars.length, good.length);
+  for (const state of [sameChars, good + 'é', '😀', 'x', good.slice(1), '']) {
+    const r = await c.comeBack({ state, code: c.state.code });
+    assert.equal(r.status, 400, JSON.stringify(state));
+    assert.match(r.text, /a sign-in this server started/);
+    assert.match(r.headers['content-type'], /text\/html/);
+  }
+  assert.equal(c.up.count('POST /token'), 0);
+  // and the real one still works afterwards: a bad guess doesn't burn the pending sign-in
+  assert.equal((await c.comeBack({ state: good, code: c.state.code })).status, 302);
+});
+
+test('length: YouTube\'s 200 characters is enforced before any quota is spent', async t => {
+  const c = await setup(t);
+  assert.equal(c.sender.maxLength, 200);
+  const before = c.up.calls.length;
+  const used = c.sender.setupState({ port: c.app.port }).quota.usedTodayEstimate;
+  const r = await c.sender.send('x'.repeat(201), TARGET);
+  assert.deepEqual(r, { ok: false, code: 'too_long', reason: 'YouTube live chat messages are 200 characters at most.' });
+  assert.equal(c.up.calls.length, before);
+  assert.equal(c.sender.setupState({ port: c.app.port }).quota.usedTodayEstimate, used);
+  assert.equal((await c.sender.send('x'.repeat(200), TARGET)).ok, true);
+});
+
+test('length: a Both that fits Twitch but not YouTube sends to neither', async t => {
+  const c = await setup(t);
+  const twitch = fakeSender({ maxLength: 500 });
+  const app = await startApp({ senders: { twitch, youtube: c.sender } });
+  t.after(app.close);
+  const session = await app.get('/api/dock/session');
+  assert.equal(session.json.platforms.youtube.maxLength, 200);
+  assert.equal(session.json.platforms.twitch.maxLength, 500);
+  const calls = c.up.calls.length;
+  const r = await app.post('/api/send', { target: 'both', text: 'x'.repeat(300) });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.code, 'too_long');
+  assert.equal(r.json.platform, 'youtube');
+  assert.equal(r.json.limit, 200);
+  assert.equal(twitch.sent.length, 0);             // Twitch did not get it on its own
+  assert.equal(c.up.calls.length, calls);          // and no quota was spent
+  const ok = await app.post('/api/send', { target: 'both', text: 'x'.repeat(200) });
+  assert.deepEqual([ok.json.results.twitch.ok, ok.json.results.youtube.ok], [true, true]);
 });

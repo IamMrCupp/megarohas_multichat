@@ -117,6 +117,8 @@ answer from the same box.
   **YouTube** is the heavier one: sending has to go through the official API, so it needs
   your own Google Cloud project. Reading never uses the API — the quota is spent on replies
   only, 20 units each out of 10,000 a day.
+- **One copy sends.** If a second copy ends up running from the same folder (the server
+  takes the next free port when its own is busy), it reads chat but won't send, and says so.
 
 Tokens live in `secrets.json` beside `config.json`, owner-readable only. They're never
 logged and never sent to a page.

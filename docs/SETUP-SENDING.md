@@ -162,8 +162,10 @@ taken and it fell back to another port, the setup page shows the one it's really
 4. Google sends the browser back to this server, and the setup page shows
    **Signed in as _your channel_**.
 
-Replies go to whatever broadcast the reader is already following — the first YouTube source
-in the panel that's live. Nothing to configure.
+Replies go to the broadcast the reader is already following on your YouTube source, and the
+dock shows it: `YouTube → Your Channel · video …`, or `not live yet`. That's the first YouTube
+source you added; with more than one, pick the reply target in the dock. It never changes by
+itself — a second YouTube source that happens to be live doesn't take over.
 
 ### What it asks for, and what it stores
 
@@ -202,5 +204,9 @@ itself:
   chat. There's nothing to reply in until it's live.
 - **Quota used up** — with the time until midnight Pacific.
 
-Google's API docs don't give a maximum message length, so the dock doesn't guess one — if a
-message is too long for YouTube, YouTube says so.
+**Message length.** YouTube live chat takes **200 characters** a message
+([YouTube Help](https://support.google.com/youtube/answer/2524549)); Twitch takes 500. The
+dock's counter follows whichever applies to what you're aiming at, and the server checks
+before sending — so an over-long YouTube reply costs no quota, and a *Both* that fits Twitch
+but not YouTube goes to neither rather than to Twitch alone. The 200 is from YouTube's Help
+pages; the API reference itself gives no number.
