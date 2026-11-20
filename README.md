@@ -6,6 +6,11 @@ A local aggregator that merges **Twitch + YouTube** chats into one good-looking 
 No API keys, no OAuth, no third-party services, **zero dependencies** — a single
 Node.js process running on your own machine.
 
+> **This is a fork** of [megarohas/megarohas_multichat](https://github.com/megarohas/megarohas_multichat)
+> by megarohas — all the reading, the overlay and the panel are their work, MIT-licensed.
+> The fork adds one thing: a **reply dock**, so the streamer can answer both chats from one
+> place. Reading still needs no keys and no sign-in.
+
 - Paste your stream links — messages from both platforms show up in a single
   chat in arrival order, in real time.
 - The overlay is a plain page on `localhost` that OBS displays via a
@@ -62,11 +67,12 @@ installed Edge/Chrome/Chromium).
 
 ### Network and port
 
-- By default the server is reachable from **every device on your local network** —
-  addresses like `http://192.168.x.x:3131/…` are printed to the console and shown in
-  the panel (handy for OBS on another PC or for checking from your phone). On first
-  launch Windows will ask for firewall permission — allow it for private networks.
-  If you only need it on this PC, set `"host": "127.0.0.1"` in `config.json`.
+- **This fork listens on `127.0.0.1` only by default** — upstream listens on the whole LAN.
+  OBS on the same machine needs nothing more. To show the overlay to another PC or a phone,
+  set `"host": "0.0.0.0"` in `config.json`: addresses like `http://192.168.x.x:3131/…` are
+  then printed to the console and shown in the panel, and Windows will ask for firewall
+  permission on first launch. Only the overlay and the feed open up — the panel's controls
+  and the reply dock keep working from this machine alone.
 - If the port is taken, the server picks the next free one and prints the
   actual address.
 
@@ -83,6 +89,44 @@ installed Edge/Chrome/Chromium).
    without being live.
 
 Links are saved to `config.json` and restored on restart.
+
+## Reply dock
+
+The overlay is for viewers. The dock is for you — one page where you read both chats and
+answer from the same box.
+
+- Dock: **http://127.0.0.1:3131/dock** — in OBS, *Docks → Custom Browser Docks*, paste that URL.
+- The merged feed, no fade, with scrollback. Scroll up to read and it stops following;
+  a button takes you back to the newest line.
+- Pick **Twitch**, **YouTube** or **Both**, type, Enter. Clicking a chat line aims the reply
+  at the platform it came from.
+- **The dock shows where each reply will go** — `Twitch → #yourchannel`, `YouTube → Your
+  Channel · video …` — in the page, above the box. The first source you add for a platform
+  becomes its reply target and stays that until you pick another in the dock. Adding more
+  sources never moves it; removing it leaves that platform with no target rather than
+  hopping to another. A send is refused if the target changed since the dock last showed it.
+- A character counter follows the tightest limit of the chats you're aiming at. A message
+  too long for one of them is refused before anything is sent to either.
+- Your own messages show up when the platform sends them back through the feed — there's no
+  local echo, so the dock never shows something your viewers didn't get.
+- A platform you haven't signed in to is greyed out, not hidden. Setup lives at
+  **http://127.0.0.1:3131/setup**.
+
+**Sending is local-only.** The send and setup endpoints refuse anything that isn't this
+machine: the request has to come from a loopback address, name this server in `Host`, come
+from this server's own pages (`Origin`), and carry a token the dock page gets from the
+server at load. The panel's own controls — add, remove and reconnect a source, clear, test
+messages — sit behind the same gate, because the source list decides where replies go. That
+holds even when the server is bound to the whole LAN: the overlay and the feed stay
+reachable from another PC, changing anything doesn't. Open the dock or the panel from
+another machine and it's read-only.
+
+**What the gate doesn't stop:** another program on this same machine. Anything running
+locally — including another user account on a shared computer — can ask the server for the
+token the same way the dock does, and then send. Treat it as single-user software on a
+machine you trust. Closing that needs a secret only your account can read, carried in the
+dock's URL; that's proposed in
+[#10](https://github.com/IamMrCupp/megarohas_multichat/issues/10), not built.
 
 ## Overlay parameters
 
@@ -136,10 +180,20 @@ The app icon is `assets/icon.ico` (+ `public/favicon.svg` for the pages):
 to use your own, just replace the files; `build/make-icon.js` regenerates
 the default one.
 
+## Tests
+
+```bash
+npm test
+```
+
+`node:test`, no dependencies, no network — the suite starts its own throwaway servers on
+loopback.
+
 ## Limitations
 
 - Only public chats are read. YouTube members-only chat requires
   authentication and isn't supported.
 - YouTube latency is a couple of seconds (polling); Twitch is near zero.
-- `config.json`: `host`/`port` can be changed (e.g. to `0.0.0.0` if OBS
-  is on another machine).
+- `config.json`: `host`/`port` can be changed (e.g. `"host": "0.0.0.0"` if OBS
+  is on another machine). `replyTo` is written by the dock — it remembers which source
+  each platform replies to.
