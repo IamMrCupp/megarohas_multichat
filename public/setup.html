@@ -51,6 +51,7 @@
   tr:first-child td { border-top: 0; }
   td.n { font-family: var(--mono); color: var(--acc); text-align: right; }
   #top { color: var(--err); font-size: 13.5px; margin-top: 12px; }
+  #notices div { color: var(--err); font-size: 13.5px; margin-top: 12px; border: 1px solid var(--err); border-radius: 10px; padding: 9px 12px; }
 </style>
 </head>
 <body>
@@ -58,6 +59,7 @@
 <div class="sub">Reading chat needs no sign-in. Replying does — one platform at a time, each optional.
   Steps: <a href="https://github.com/IamMrCupp/megarohas_multichat/blob/main/docs/SETUP-SENDING.md" target="_blank" rel="noopener">docs/SETUP-SENDING.md</a></div>
 <div id="top"></div>
+<div id="notices"></div>
 
 <div class="card" id="twitch"><h2>Twitch</h2><div class="body"></div></div>
 <div class="card" id="youtube"><h2>YouTube</h2><div class="body"></div></div>
@@ -99,6 +101,9 @@ function dirty(body) {
 }
 
 function render(state, force) {
+  const box = document.getElementById('notices');
+  box.textContent = '';
+  for (const n of state.notices || []) box.appendChild(el('div', '', n));
   for (const name of ['twitch', 'youtube']) {
     const p = state.platforms[name];
     const body = document.querySelector('#' + name + ' .body');

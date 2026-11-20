@@ -132,3 +132,37 @@ test('server: Twitch client ID is saved to config.json and survives; no secrets 
   const send = await request(s.port, { method: 'POST', path: '/api/send', body: { target: 'twitch', text: 'hi' }, headers });
   assert.equal(send.json.results.twitch.code, 'not_signed_in');
 });
+
+test('server: a second copy on the same folder reads chat but will not send; a broken secrets file is set aside and reported', async t => {
+  const fs = require('fs');
+  const path = require('path');
+  const first = await startServer(t);
+  fs.writeFileSync(path.join(first.dir, 'secrets.json'), '{"twitch": {"refreshToken": "FAKE_REFRESH_in_a_broken_file"', { mode: 0o600 });
+  const tok1 = (await request(first.port, { path: '/api/dock/session' })).json.token;
+  const st1 = await request(first.port, { path: '/api/setup/state', headers: { 'x-dock-token': tok1 } });
+  assert.equal(st1.json.platforms.twitch.available, true);
+  assert.equal(st1.json.notices.length, 1);
+  assert.match(st1.json.notices[0], /couldn't be parsed, so it was moved to secrets\.json\.broken-/);
+  const aside = fs.readdirSync(first.dir).filter(f => f.startsWith('secrets.json.broken-'));
+  assert.equal(aside.length, 1);
+  assert.ok(fs.readFileSync(path.join(first.dir, aside[0]), 'utf8').includes('FAKE_REFRESH_in_a_broken_file'));
+  assert.ok(!first.output().includes('FAKE_REFRESH'));
+  assert.ok(!fs.readFileSync(path.join(first.dir, 'error.log'), 'utf8').includes('FAKE_REFRESH'));
+
+  const second = await startServer(t, {}, first.dir);
+  assert.notEqual(second.port, first.port);
+  for (let i = 0; i < 100 && !/Sending is off/.test(second.output()); i++) await new Promise(r => setTimeout(r, 20));   // the line after the one startServer waits for
+  assert.match(second.output(), /Sending is off in this copy/);
+  // the port fallback announces itself once, with the port it really got
+  assert.equal(second.output().match(/Reply dock:/g).length, 1);
+  assert.ok(second.output().includes(`http://127.0.0.1:${second.port}/dock`));
+  assert.equal((await request(second.port, { path: '/api/state' })).json.port, second.port);
+  const tok2 = (await request(second.port, { path: '/api/dock/session' })).json;
+  assert.equal(tok2.platforms.twitch.available, false);
+  assert.match(tok2.platforms.twitch.detail, /another copy of the server/);
+  const send = await request(second.port, { method: 'POST', path: '/api/send', body: { target: 'twitch', text: 'x', expect: {} }, headers: { origin: second.origin, 'x-dock-token': tok2.token } });
+  assert.equal(send.json.results.twitch.code, 'sending_disabled');
+  assert.equal((await request(second.port, { path: '/overlay' })).status, 200);       // reading is unaffected
+  // the first copy still owns sending
+  assert.equal((await request(first.port, { path: '/api/dock/session' })).json.platforms.twitch.available, true);
+});

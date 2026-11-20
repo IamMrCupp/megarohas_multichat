@@ -346,3 +346,147 @@ test('over HTTP: sign in from the setup page, send from the dock, no token in an
   for (const secret of ['FAKE_ACCESS_', 'FAKE_REFRESH_', 'FAKE_DEVICE_CODE']) assert.ok(!all.includes(secret), secret);
   assert.ok(state.revoked.length === 1);
 });
+
+// ---------- review fixes ----------
+
+test('a refresh in flight when I sign out does not sign me back in', async t => {
+  const { up, state } = await fakeTwitch(t);
+  const { sender, clock, file } = makeSender(t, up);
+  await signIn(sender);
+  // hold Twitch's answer to the refresh until after the sign-out
+  let release;
+  const held = new Promise(r => { release = r; });
+  const real = up.routes['POST /oauth2/token'];
+  let refreshSeen;
+  const seen = new Promise(r => { refreshSeen = r; });
+  up.routes['POST /oauth2/token'] = c => { if (c.body.grant_type === 'refresh_token') refreshSeen(); return real(c); };
+  const realFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    const r = await realFetch(url, opts);
+    if (String(url).endsWith('/oauth2/token') && String(opts.body).includes('grant_type=refresh_token')) await held;
+    return r;
+  };
+  t.after(() => { global.fetch = realFetch; });
+
+  clock.t += (14400 - 60) * 1000;                    // close to expiry: the next send refreshes first
+  const sending = sender.send('x', TARGET);
+  await seen;                                        // the refresh is on the wire
+  await sender.setup({ action: 'signout', body: {} });
+  release();
+  assert.equal((await sending).code, 'not_signed_in');
+  assert.equal(sender.status().signedIn, false);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).twitch, undefined);   // the late answer was dropped
+  assert.equal(up.count('POST /helix/chat/messages'), 0);
+  assert.ok(state.access);
+});
+
+test('a refresh in flight when the client ID changes does not restore the old sign-in', async t => {
+  const { up } = await fakeTwitch(t);
+  const { sender, clock, file, cfg } = makeSender(t, up);
+  await signIn(sender);
+  let release;
+  const held = new Promise(r => { release = r; });
+  let refreshSeen;
+  const seen = new Promise(r => { refreshSeen = r; });
+  const realFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    const isRefresh = String(url).endsWith('/oauth2/token') && String(opts.body).includes('grant_type=refresh_token');
+    if (isRefresh) refreshSeen();
+    const r = await realFetch(url, opts);
+    if (isRefresh) await held;
+    return r;
+  };
+  t.after(() => { global.fetch = realFetch; });
+  clock.t += (14400 - 60) * 1000;
+  const sending = sender.send('x', TARGET);
+  await seen;
+  await sender.setup({ action: 'client', body: { clientId: 'anotherfakeclientid0123456789' } });
+  release();
+  assert.equal((await sending).ok, false);
+  assert.equal(cfg.clientId, 'anotherfakeclientid0123456789');
+  assert.equal(sender.status().signedIn, false);
+  assert.ok(!fs.existsSync(file) || JSON.parse(fs.readFileSync(file, 'utf8')).twitch === undefined);
+});
+
+test('two copies on one folder: the second uses the rotated refresh token instead of signing everyone out', async t => {
+  const { up, state } = await fakeTwitch(t);
+  const a = makeSender(t, up);
+  await signIn(a.sender);
+  // a second process: its own store object, same file
+  const b = new TwitchSender({
+    store: new SecretStore(a.file), getClientId: () => CLIENT_ID, setClientId: () => {},
+    endpoints: { id: up.base, api: up.base }, now: () => a.clock.t,
+  });
+  assert.equal(b.status().signedIn, true);
+  a.clock.t += (14400 - 60) * 1000;
+  assert.equal((await a.sender.send('from a', TARGET)).ok, true);     // a refreshes: the old refresh token is spent
+  const rotated = state.refresh;
+  assert.equal((await b.send('from b', TARGET)).ok, true);            // b reads the file, sees the new tokens
+  assert.equal(up.calls.filter(c => c.body && c.body.grant_type === 'refresh_token').length, 1);
+  assert.equal(JSON.parse(fs.readFileSync(a.file, 'utf8')).twitch.refreshToken, rotated);
+
+  // the worst case: both start a refresh with the same token; the loser gets a
+  // 400, finds the winner's token on disk and carries on with it
+  a.clock.t += 14400 * 1000;
+  const results = await Promise.all([a.sender.send('race a', TARGET), b.send('race b', TARGET)]);
+  assert.deepEqual(results.map(r => r.ok), [true, true], JSON.stringify(results));
+  assert.equal(a.sender.status().signedIn, true);
+  assert.equal(b.status().signedIn, true);
+  assert.equal(JSON.parse(fs.readFileSync(a.file, 'utf8')).twitch.refreshToken, state.refresh);
+});
+
+test('device flow keeps polling through network errors until the code expires', async t => {
+  const { up, state } = await fakeTwitch(t, { pendingPolls: 1 });
+  const { sender, clock } = makeSender(t, up);
+  const realFetch = global.fetch;
+  let failing = 3;
+  let attempts = 0;
+  global.fetch = async (url, opts) => {
+    if (String(url).endsWith('/oauth2/token')) {
+      attempts++;
+      if (failing-- > 0) throw new TypeError('fetch failed');     // what a dropped connection looks like
+    }
+    return realFetch(url, opts);
+  };
+  t.after(() => { global.fetch = realFetch; });
+  await sender.setup({ action: 'signin', body: {} });
+  await waitFor(() => sender.status().signedIn);
+  assert.ok(attempts >= 5, String(attempts));          // 3 failures, 1 pending, 1 success
+  assert.equal(sender.setupState().pendingError, '');
+
+  // and it does stop: errors all the way to expiry end the flow with the expiry message
+  await sender.setup({ action: 'signout', body: {} });
+  failing = Infinity;
+  state.pendingLeft = 0;
+  await sender.setup({ action: 'signin', body: {} });
+  await new Promise(r => setTimeout(r, 40));
+  assert.ok(sender.setupState().pending, 'still pending after repeated errors');
+  clock.t += 1801 * 1000;
+  await waitFor(() => sender.setupState().pendingError);
+  assert.match(sender.setupState().pendingError, /expired/);
+});
+
+test('a second copy of the server does not send, and says why', async t => {
+  const { up } = await fakeTwitch(t);
+  const { sender } = makeSender(t, up);
+  await signIn(sender);
+  const why = 'Sending is off in this copy: another copy of the server (process 1001) is already running from this folder and owns sending.';
+  const app = await startApp({ senders: { twitch: sender }, disabled: () => why, notices: () => ['secrets.json couldn\'t be parsed, so it was moved to secrets.json.broken-20261120T101500Z and sign-ins start fresh.'] });
+  t.after(app.close);
+  const calls = up.calls.length;
+  const session = await app.get('/api/dock/session');
+  assert.equal(session.json.platforms.twitch.available, false);
+  assert.equal(session.json.platforms.twitch.signedIn, false);
+  assert.equal(session.json.platforms.twitch.detail, why);
+  const sent = await app.post('/api/send', { target: 'twitch', text: 'x' });
+  assert.deepEqual(sent.json.results.twitch, { ok: false, code: 'sending_disabled', reason: why });
+  const signin = await app.post('/api/setup/twitch/signin', {});
+  assert.equal(signin.status, 409);
+  assert.equal(signin.json.code, 'sending_disabled');
+  const st = await app.get('/api/setup/state');
+  assert.equal(st.json.notices.length, 2);
+  assert.equal(st.json.notices[0], why);
+  assert.match(st.json.notices[1], /moved to secrets\.json\.broken-/);
+  assert.equal(st.json.platforms.twitch.clientId, undefined);
+  assert.equal(up.calls.length, calls);            // nothing reached Twitch
+});
