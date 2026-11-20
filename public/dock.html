@@ -49,6 +49,17 @@
   }
   #picker button.on { border-color: var(--acc); background: #33291a; color: var(--acc); font-weight: 700; }
   #picker button.off { opacity: 0.42; cursor: not-allowed; }
+  #targets { font-size: 12px; color: var(--mut); margin-bottom: 6px; }
+  #targets .t { display: flex; align-items: center; gap: 6px; min-height: 18px; }
+  #targets .t span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #targets .t.ok span { color: var(--ink); }
+  #targets a { color: var(--acc); flex: none; }
+  #targets select {
+    flex: none; max-width: 45%; background: var(--field); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 11.5px; padding: 1px 3px;
+  }
+  #count { flex: none; align-self: center; font-size: 11.5px; color: var(--mut); font-variant-numeric: tabular-nums; min-width: 52px; text-align: right; }
+  #count.over { color: var(--err); font-weight: 700; }
   #row { display: flex; gap: 6px; }
   #text {
     flex: 1; min-width: 0; background: var(--field); color: var(--ink);
@@ -78,14 +89,18 @@
     <button type="button" data-t="youtube">YouTube</button>
     <button type="button" data-t="both">Both</button>
   </div>
+  <div id="targets"></div>
   <div id="row">
     <input id="text" maxlength="500" placeholder="Reply…" spellcheck="true">
+    <span id="count"></span>
     <button id="send">Send</button>
   </div>
   <div id="state"></div>
 </form>
+<script src="/dock-logic.js"></script>
 <script>
 'use strict';
+const L = window.DockLogic;
 const LIMIT = 500;                 // lines kept for scrollback
 const LABEL = { twitch: 'Twitch', youtube: 'YouTube', both: 'Both' };
 const feed = document.getElementById('feed');
@@ -95,6 +110,8 @@ const stateEl = document.getElementById('state');
 const textEl = document.getElementById('text');
 const sendBtn = document.getElementById('send');
 const pickBtns = [...document.querySelectorAll('#picker button')];
+const targetsEl = document.getElementById('targets');
+const countEl = document.getElementById('count');
 const byId = new Map();
 
 const P_ICONS = {
@@ -212,26 +229,65 @@ es.onmessage = e => {
 let token = null;
 let platforms = null;       // from /api/dock/session
 let target = null;
+let returnTo = null;        // where to go back to after retrying half of a "both"
 let localOnly = false;      // this page was opened from another machine
 let busy = false;
 try { target = localStorage.getItem('dock.target'); } catch (e) {}
 
-function usable(t) {
-  if (!platforms) return false;
-  const one = p => platforms[p] && platforms[p].signedIn && platforms[p].connected;
-  return t === 'both' ? one('twitch') && one('youtube') : one(t);
-}
+function usable(t) { return L.usable(platforms, t); }
 function whyNot(t) {
   if (localOnly) return 'Sending only works from the machine the server runs on.';
   if (!platforms) return 'No connection to the server.';
-  if (t === 'both') return whyNot(!usableOne('twitch') ? 'twitch' : 'youtube');
-  const p = platforms[t];
-  if (!p.available) return p.detail;
-  if (!p.signedIn) return `Not signed in to ${LABEL[t]}.`;
-  if (!p.connected) return `No ${LABEL[t]} chat is connected in the panel.`;
-  return '';
+  if (t === 'both') return whyNot(!usable('twitch') ? 'twitch' : 'youtube');
+  return L.targetLine(platforms, t).text;
 }
-function usableOne(p) { return usable(p); }
+
+// Where each reply will go, in the page itself — not a tooltip.
+function renderTargets() {
+  targetsEl.textContent = '';
+  if (localOnly || !platforms) return;
+  for (const p of L.NAMES) {
+    const line = L.targetLine(platforms, p);
+    const row = el('div', 't' + (line.ok ? ' ok' : ''));
+    row.appendChild(el('span', '', line.text));
+    if (line.setup) { const a = el('a', '', 'Setup'); a.href = '/setup'; a.target = '_blank'; a.rel = 'noopener'; row.appendChild(a); }
+    const s = platforms[p];
+    // More than one source, or none chosen: the choice is the user's, made here.
+    if (s.signedIn && s.choices.length && (s.choices.length > 1 || !s.connected)) {
+      const sel = el('select');
+      sel.title = `Which ${LABEL[p]} chat replies go to`;
+      if (!s.connected) sel.appendChild(new Option('choose…', ''));
+      for (const c of s.choices) sel.appendChild(new Option(c.label, c.id));
+      const current = s.connected ? s.targetKey.split(':')[0] : '';
+      sel.value = current;
+      sel.onchange = () => chooseTarget(p, sel.value);
+      row.appendChild(sel);
+    }
+    targetsEl.appendChild(row);
+  }
+}
+
+async function chooseTarget(platform, source) {
+  if (!source) return;
+  try {
+    const r = await fetch('/api/dock/target', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-dock-token': token || '' },
+      body: JSON.stringify({ platform, source }),
+    });
+    if (!r.ok) say([{ cls: 'bad', text: 'Couldn\'t change the reply target.' }]);
+  } catch (e) { say([{ cls: 'bad', text: 'No connection to the server.' }]); }
+  refreshSession();
+}
+
+function renderCount() {
+  if (!usable(target)) { countEl.textContent = ''; return true; }
+  const { limit } = L.limitFor(platforms, target);
+  const n = L.count(textEl.value.trim());
+  countEl.textContent = `${n} / ${limit}`;
+  countEl.classList.toggle('over', n > limit);
+  return n <= limit;
+}
 
 function renderPicker() {
   if (!usable(target)) target = ['twitch', 'youtube'].find(usable) || target;
@@ -242,11 +298,11 @@ function renderPicker() {
     b.classList.toggle('on', ok && t === target);
     const p = platforms && platforms[t];
     b.textContent = LABEL[t];
-    b.title = ok
-      ? (t === 'both' ? 'Send to both chats' : `Send to ${p.target || LABEL[t]}` + (p.as ? ` as ${p.as}` : ''))
-      : whyNot(t);
+    b.title = ok ? (t === 'both' ? 'Send to both chats' : L.targetLine(platforms, t).text) : whyNot(t);
   }
-  const can = usable(target) && !busy;
+  renderTargets();
+  const fits = renderCount();
+  const can = usable(target) && !busy && fits;
   textEl.disabled = !usable(target);
   sendBtn.disabled = !can;
   textEl.placeholder = usable(target)
@@ -270,6 +326,7 @@ function pick(t, fromLine) {
     return;
   }
   target = t;
+  returnTo = null;          // a deliberate pick cancels any pending "go back to Both"
   try { localStorage.setItem('dock.target', t); } catch (e) {}
   if (!fromLine) say([]);
   renderPicker();
@@ -286,7 +343,10 @@ async function refreshSession() {
       say([{ cls: 'bad', text: localOnly ? 'Read-only here — sending only works from the machine the server runs on.' : (j.error || 'Sending refused.') }]);
     } else {
       const j = await r.json();
+      const moved = L.targetChanges(platforms, j.platforms);
       token = j.token; platforms = j.platforms; localOnly = false;
+      // The reply target changed under the page: say so, out loud.
+      if (moved.length) say(moved.map(text => ({ cls: 'bad', text })));
       if (!['twitch', 'youtube'].some(usable) && !stateEl.textContent) {
         const p = ['twitch', 'youtube'].find(x => platforms[x].available && !platforms[x].signedIn);
         say([{ text: p ? 'Not signed in.' : 'Sending isn\'t set up.', setup: !!p }]);
@@ -310,6 +370,11 @@ document.getElementById('composer').addEventListener('submit', async e => {
   e.preventDefault();
   const text = textEl.value.trim();
   if (!text || busy || !usable(target)) return;
+  if (!renderCount()) {
+    const { limit, by } = L.limitFor(platforms, target);
+    say([{ cls: 'bad', text: `Too long for ${LABEL[by]} — ${limit} characters at most. Nothing was sent.` }]);
+    return;
+  }
   busy = true; renderPicker();
   say([{ text: 'Sending…' }]);
   try {
@@ -323,12 +388,10 @@ document.getElementById('composer').addEventListener('submit', async e => {
       say([{ cls: 'bad', text: 'Not sent — ' + (j.error || 'HTTP ' + r.status) }]);
     } else {
       const names = Object.keys(j.results);
-      say(names.map(p => resultPart(p, j.results[p])));
-      const failed = names.filter(p => !j.results[p].ok);
-      if (!failed.length) textEl.value = '';
-      // One of two went through: keep the text and aim at the one that didn't,
-      // so Enter retries that chat only instead of double-posting to the other.
-      else if (failed.length < names.length && usable(failed[0])) target = failed[0];
+      const next = L.afterSend({ target, returnTo }, j.results, platforms);
+      target = next.target; returnTo = next.returnTo;
+      if (next.clear) textEl.value = '';
+      say(names.map(p => resultPart(p, j.results[p])).concat(next.note ? [{ text: next.note }] : []));
     }
   } catch (err) {
     say([{ cls: 'bad', text: 'Not sent — no connection to the server.' }]);
@@ -342,10 +405,11 @@ function post(text) {
   return fetch('/api/send', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-dock-token': token || '' },
-    body: JSON.stringify({ target, text }),
+    body: JSON.stringify({ target, text, expect: L.expectFor(platforms, target) }),
   });
 }
 
+textEl.addEventListener('input', renderPicker);
 refreshSession();
 setInterval(refreshSession, 15000);
 </script>

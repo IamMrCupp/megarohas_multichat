@@ -44,6 +44,69 @@ test('server: session, then a gated send that reports honest state', async t => 
   assert.equal((await request(s.port, { path: '/api/dock/session', headers: { host: 'evil.example:' + s.port } })).status, 403);
 });
 
+test('server: binds loopback by default', async t => {
+  const s = await startServer(t, { host: undefined });
+  const state = await request(s.port, { path: '/api/state' });
+  assert.equal(state.json.host, '127.0.0.1');
+  assert.deepEqual(state.json.lan, []);
+  assert.ok(!s.output().includes('По локальной сети'));
+});
+
+test('server: the panel\'s controls are gated like sending, so nobody else can change the source list', async t => {
+  const s = await startServer(t);
+  const token = (await request(s.port, { path: '/api/dock/session' })).json.token;
+  const good = { origin: s.origin, 'x-dock-token': token };
+  const writes = [
+    ['POST', '/api/sources', { url: 'https://www.twitch.tv/someoneelse' }],
+    ['DELETE', '/api/sources/abcd1234'],
+    ['POST', '/api/sources/abcd1234/reconnect'],
+    ['POST', '/api/clear'],
+    ['POST', '/api/test'],
+  ];
+  const refusals = [
+    ['bad_origin', {}],                                                        // curl, or a LAN device with no Origin
+    ['bad_origin', { origin: 'https://evil.example', 'content-type': 'text/plain' }],   // a web page's no-cors POST
+    ['bad_origin', { ...good, 'sec-fetch-site': 'cross-site' }],
+    ['no_token', { origin: s.origin }],
+    ['bad_token', { origin: s.origin, 'x-dock-token': 'wrong' }],
+    ['bad_host', { ...good, host: '192.168.1.20:' + s.port }],
+    ['proxied', { ...good, 'x-forwarded-for': '192.168.1.20' }],
+  ];
+  for (const [method, path, body] of writes) {
+    for (const [code, headers] of refusals) {
+      const r = await request(s.port, { method, path, body, headers });
+      assert.equal(r.status, 403, `${method} ${path} ${code}`);
+      assert.equal(r.json.code, code, `${method} ${path}`);
+    }
+  }
+  assert.deepEqual((await request(s.port, { path: '/api/state' })).json.sources, []);
+  const session = (await request(s.port, { path: '/api/dock/session' })).json;
+  assert.equal(session.platforms.twitch.connected, false);
+
+  // the panel itself, on this machine, still works (a link that isn't a stream
+  // is turned down by the panel's own check — so the gate let it through)
+  const add = await request(s.port, { method: 'POST', path: '/api/sources', body: { url: 'https://example.com/not-a-stream' }, headers: good });
+  assert.equal(add.status, 400);
+  assert.ok(add.json.error && !add.json.code);
+  assert.equal((await request(s.port, { method: 'POST', path: '/api/clear', headers: good })).status, 200);
+  assert.equal((await request(s.port, { method: 'DELETE', path: '/api/sources/abcd1234', headers: good })).status, 404);
+  // reading is as open as it was
+  assert.equal((await request(s.port, { path: '/api/state', headers: { host: 'some-lan-name:' + s.port } })).status, 200);
+  assert.equal((await request(s.port, { path: '/overlay', headers: { host: 'some-lan-name:' + s.port } })).status, 200);
+});
+
+test('server: dock-logic.js is served, and a null body is a 400', async t => {
+  const s = await startServer(t);
+  const js = await request(s.port, { path: '/dock-logic.js' });
+  assert.equal(js.status, 200);
+  assert.match(js.headers['content-type'], /javascript/);
+  assert.ok(js.text.includes('DockLogic'));
+  const token = (await request(s.port, { path: '/api/dock/session' })).json.token;
+  const r = await request(s.port, { method: 'POST', path: '/api/send', body: 'null', headers: { origin: s.origin, 'x-dock-token': token } });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.code, 'bad_request');
+});
+
 test('server: Twitch client ID is saved to config.json and survives; no secrets file until sign-in', async t => {
   const fs = require('fs');
   const path = require('path');
@@ -60,8 +123,8 @@ test('server: Twitch client ID is saved to config.json and survives; no secrets 
   const cfg = () => JSON.parse(fs.readFileSync(path.join(s.dir, 'config.json'), 'utf8'));
   assert.equal(cfg().twitchClientId, 'fakeclientid0123456789abcdefgh');
   // the panel's own save path keeps it
-  await request(s.port, { method: 'POST', path: '/api/clear' });
-  await request(s.port, { method: 'DELETE', path: '/api/sources/abcd1234' });
+  assert.equal((await request(s.port, { method: 'POST', path: '/api/clear', headers })).status, 200);
+  assert.equal((await request(s.port, { method: 'DELETE', path: '/api/sources/abcd1234', headers })).status, 404);
   assert.equal(cfg().twitchClientId, 'fakeclientid0123456789abcdefgh');
   assert.equal(fs.existsSync(path.join(s.dir, 'secrets.json')), false);
 

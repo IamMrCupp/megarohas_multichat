@@ -13,6 +13,7 @@ const { YouTubeSource } = require('./lib/youtube');
 const { createSendApi } = require('./lib/sendapi');
 const { SecretStore } = require('./lib/tokens');
 const { TwitchSender } = require('./lib/twitch-send');
+const { createReplyTargets } = require('./lib/targets');
 
 // Когда приложение собрано в единый исполняемый файл (Node SEA, см.
 // build/build.js), статика отдаётся из встроенных ассетов, а изменяемые
@@ -48,10 +49,11 @@ process.on('uncaughtException', e => logErr('uncaughtException', e));
 process.on('unhandledRejection', e => logErr('unhandledRejection', e));
 
 // ---------- config ----------
-// host 0.0.0.0 = сервер виден всем устройствам локальной сети (OBS на
-// другом ПК, телефон и т.п.). Поставь в config.json "host": "127.0.0.1",
-// если нужно только на этой машине.
-let config = { host: '0.0.0.0', port: 3131, sources: [] };
+// The fork binds loopback by default: the same process can now post to the
+// streamer's accounts. Put "host": "0.0.0.0" in config.json to show the
+// overlay to other devices on the LAN (OBS on another PC, a phone) — the
+// overlay and the feed open up, sending and the panel's controls stay local.
+let config = { host: '127.0.0.1', port: 3131, sources: [] };
 try {
   // Блокнот и PowerShell любят сохранять UTF-8 с BOM — срезаем
   const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8').replace(/^\uFEFF/, ''));
@@ -67,6 +69,8 @@ function saveConfig() {
   };
   // the Twitch application's client ID is public, so it lives here; tokens don't
   if (config.twitchClientId) out.twitchClientId = config.twitchClientId;
+  const replyTo = replyTargets.toConfig();
+  if (Object.keys(replyTo).length) out.replyTo = replyTo;
   try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(out, null, 2)); } catch (e) {
     console.error('Не удалось сохранить config.json:', e.message);
   }
@@ -184,6 +188,7 @@ function addSource(url, save = true) {
   };
   sources.set(entry.id, entry);
   startAdapter(entry);
+  replyTargets.added(entry);
   if (save) saveConfig();
   broadcastStatus();
   return { source: { id: entry.id, url, platform } };
@@ -194,6 +199,7 @@ function removeSource(id) {
   if (!entry) return false;
   if (entry.adapter) entry.adapter.stop();
   sources.delete(id);
+  replyTargets.removed(entry);
   history = history.filter(m => m.source !== id);
   broadcast({ type: 'clear', source: id });
   saveConfig();
@@ -215,18 +221,12 @@ function reconnectSource(id) {
 // ---------- sending (the dock) ----------
 // Reading stays anonymous and open. Everything that writes to an account goes
 // through lib/sendapi.js, which refuses anything that isn't this machine.
-// The reply target is the first connected source of each platform.
-function sendTargets() {
-  const out = { twitch: null, youtube: null };
-  for (const s of sources.values()) {
-    if (!s.adapter) continue;
-    if (s.platform === 'twitch' && !out.twitch) out.twitch = { channel: s.adapter.channel };
-    if (s.platform === 'youtube' && (!out.youtube || (!out.youtube.videoId && s.adapter.videoId))) {
-      out.youtube = { videoId: s.adapter.videoId || null, channel: s.channel };
-    }
-  }
-  return out;
-}
+// Where a reply goes is pinned per platform and shown in the dock — see
+// lib/targets.js. It never follows the source list around by itself.
+const replyTargets = createReplyTargets({
+  listSources: () => [...sources.values()],
+  onChange: () => { saveConfig(); broadcastStatus(); },
+});
 
 // Tokens and client secrets: secrets.json beside config.json, owner-only.
 const secrets = new SecretStore(path.join(APP_DIR, 'secrets.json'));
@@ -238,7 +238,8 @@ const twitchSender = new TwitchSender({
 
 const sendApi = createSendApi({
   getPort: () => actualPort,
-  getTargets: sendTargets,
+  getTargets: () => replyTargets.get(),
+  setTarget: (platform, id) => replyTargets.set(platform, id),
   senders: { twitch: twitchSender },
   log: logErr,
 });
@@ -328,6 +329,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/') return serveFile(res, 'panel.html');
       if (p === '/dock') return serveFile(res, 'dock.html');
       if (p === '/setup') return serveFile(res, 'setup.html');
+      if (p === '/dock-logic.js') return serveFile(res, 'dock-logic.js');
       if (p === '/overlay') return serveFile(res, 'overlay.html');
       if (p === '/overlay.css') return serveFile(res, 'overlay.css');
       if (p === '/favicon.svg') return serveFile(res, 'favicon.svg');
@@ -362,6 +364,12 @@ const server = http.createServer(async (req, res) => {
         });
       }
     }
+    // The panel's controls change what the dock replies to (and clear the
+    // streamer's view), so they sit behind the same gate as sending:
+    // this machine, this server's own page, the session token.
+    const panelWrite = (req.method === 'POST' && (p === '/api/sources' || p === '/api/test' || p === '/api/clear' || /^\/api\/sources\/[a-f0-9]+\/reconnect$/.test(p)))
+      || (req.method === 'DELETE' && /^\/api\/sources\/[a-f0-9]+$/.test(p));
+    if (panelWrite && !sendApi.guard(req, res)) return;
     if (req.method === 'POST' && p === '/api/sources') {
       let body;
       try { body = JSON.parse(await readBody(req) || '{}'); } catch (e) { return json(res, 400, { error: 'bad json' }); }
@@ -434,6 +442,7 @@ function startSources() {
       if (r.error) console.error(`Источник ${s.url}: ${r.error}`);
     }
   }
+  replyTargets.restore(config.replyTo);
 }
 
 function listen(port, remaining) {
