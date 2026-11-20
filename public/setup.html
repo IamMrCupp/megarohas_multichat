@@ -95,6 +95,70 @@ function statusRow(p) {
 // Platform sections add their own controls by registering here.
 const sections = {};
 
+let editYouTubeClient = false;
+sections.youtube = (body, p) => {
+  if (!p.available) return;
+  const redirect = () => {
+    const n = el('div', 'note', 'Redirect URI this server uses: ');
+    n.appendChild(el('code', '', p.redirectUri));
+    return n;
+  };
+  if (!p.clientId || editYouTubeClient) {
+    body.appendChild(el('div', 'note', 'Paste the OAuth client from your own Google Cloud project (type: Desktop app). The secret is stored on this machine and never shown again.'));
+    const row = el('div', 'row');
+    const id = el('input'); id.placeholder = 'Google OAuth client ID'; id.value = p.clientId || ''; id.dataset.initial = p.clientId || ''; id.spellcheck = false; id.autocomplete = 'off';
+    const secret = el('input'); secret.type = 'password'; secret.placeholder = p.hasSecret ? 'Client secret (saved — leave blank to keep)' : 'Client secret'; secret.autocomplete = 'off';
+    row.appendChild(id); row.appendChild(secret);
+    row.appendChild(button('Save', 'primary', async b => {
+      const was = editYouTubeClient;
+      editYouTubeClient = false;
+      const r = await act('/api/setup/youtube/client', { clientId: id.value.trim(), clientSecret: secret.value.trim() }, b);
+      if (!r.ok) { editYouTubeClient = was; b.disabled = false; }
+    }));
+    body.appendChild(row);
+    body.appendChild(redirect());
+    if (p.clientId) body.appendChild(el('div', 'note', 'Saving a different client signs you out.'));
+    return;
+  }
+  const idNote = el('div', 'note', 'Client ID: ');
+  idNote.appendChild(el('code', '', p.clientId));
+  idNote.append(p.hasSecret ? ' · secret saved' : ' · no secret');
+  body.appendChild(idNote);
+  if (p.signinError) body.appendChild(el('div', 'note bad', p.signinError));
+  const row = el('div', 'row');
+  if (p.signedIn) {
+    row.appendChild(button('Sign out', '', b => act('/api/setup/youtube/signout', {}, b)));
+  } else {
+    row.appendChild(button('Sign in with Google', 'primary', async b => {
+      const r = await act('/api/setup/youtube/signin', {}, b);
+      const url = r.ok && r.j.url;
+      // Only ever leave for Google's own sign-in page.
+      if (typeof url === 'string' && url.startsWith('https://accounts.google.com/')) location.href = url;
+      else if (r.ok) topEl.textContent = 'The server returned a sign-in address that isn\'t Google\'s. Not opening it.';
+    }));
+    row.appendChild(button('Change client', '', () => { editYouTubeClient = true; refresh(false, true); }));
+    body.appendChild(redirect());
+  }
+  body.appendChild(row);
+
+  const q = p.quota;
+  const mins = Math.max(1, Math.round(q.resetsInMs / 60000));
+  const left = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+  const table = el('table');
+  const tr = (n, d) => { const r = el('tr'); r.appendChild(el('td', 'n', String(n))); r.appendChild(el('td', '', d)); table.appendChild(r); };
+  tr(q.perSend, 'units per reply sent (liveChatMessages.insert)');
+  tr(q.perBroadcastLookup, 'unit per broadcast, once, to find its chat (videos.list)');
+  tr(q.dailyDefault.toLocaleString('en-US'), `units a day by default — about ${Math.floor(q.dailyDefault / q.perSend)} replies`);
+  tr(q.usedTodayEstimate, 'units spent since midnight Pacific, counted by this server since it started');
+  body.appendChild(table);
+  const qn = el('div', 'note' + (q.exhausted ? ' bad' : ''),
+    (q.exhausted ? 'Quota is used up for today. ' : '') + `Resets at midnight Pacific, in about ${left}. Reading chat costs nothing — it doesn't use the API. `);
+  const src = el('a', '', 'Google\'s quota table'); src.href = 'https://developers.google.com/youtube/v3/determine_quota_cost'; src.target = '_blank'; src.rel = 'noopener';
+  qn.appendChild(src);
+  body.appendChild(qn);
+  body.appendChild(el('div', 'note', 'Asks Google for one permission, youtube.force-ssl — one of the two Google accepts for posting to live chat. Google has no chat-only permission, so the consent screen describes more than this server uses. It only ever posts chat messages.'));
+};
+
 // A half-typed field must survive the periodic refresh.
 function dirty(body) {
   return [...body.querySelectorAll('input')].some(i => i === document.activeElement || i.value !== (i.dataset.initial || ''));

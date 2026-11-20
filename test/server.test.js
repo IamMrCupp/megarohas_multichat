@@ -166,3 +166,36 @@ test('server: a second copy on the same folder reads chat but will not send; a b
   // the first copy still owns sending
   assert.equal((await request(first.port, { path: '/api/dock/session' })).json.platforms.twitch.available, true);
 });
+
+test('server: YouTube client goes to secrets.json (0600), never config.json; the panel still owns /', async t => {
+  const fs = require('fs');
+  const path = require('path');
+  const s = await startServer(t);
+  const token = (await request(s.port, { path: '/api/dock/session' })).json.token;
+  const headers = { origin: s.origin, 'x-dock-token': token };
+  const save = await request(s.port, {
+    method: 'POST', path: '/api/setup/youtube/client', headers,
+    body: { clientId: '000000000000-fakefakefakefake.apps.googleusercontent.com', clientSecret: 'FAKE_CLIENT_SECRET_do_not_use' },
+  });
+  assert.equal(save.status, 200);
+  const secretsFile = path.join(s.dir, 'secrets.json');
+  assert.equal(JSON.parse(fs.readFileSync(secretsFile, 'utf8')).youtube.clientSecret, 'FAKE_CLIENT_SECRET_do_not_use');
+  if (process.platform !== 'win32') assert.equal(fs.statSync(secretsFile).mode & 0o777, 0o600);
+  assert.ok(!fs.readFileSync(path.join(s.dir, 'config.json'), 'utf8').includes('FAKE_CLIENT_SECRET'));
+
+  const st = await request(s.port, { path: '/api/setup/state', headers: { 'x-dock-token': token } });
+  assert.equal(st.json.platforms.youtube.available, true);
+  assert.equal(st.json.platforms.youtube.hasSecret, true);
+  assert.equal(st.json.platforms.youtube.redirectUri, s.origin);
+  assert.ok(!st.text.includes('FAKE_CLIENT_SECRET'));
+
+  // a stray OAuth-shaped visit is refused; the panel is still the panel
+  assert.equal((await request(s.port, { path: '/?state=made-up&code=made-up' })).status, 400);
+  const panel = await request(s.port, { path: '/' });
+  assert.equal(panel.status, 200);
+  assert.ok(panel.text.includes('id="rows"'));
+  // nothing was written to the log about any of it
+  const log = path.join(s.dir, 'error.log');
+  assert.ok(!fs.existsSync(log) || !fs.readFileSync(log, 'utf8').includes('FAKE_'));
+  assert.ok(!s.output().includes('FAKE_'));
+});

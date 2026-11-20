@@ -13,6 +13,7 @@ const { YouTubeSource } = require('./lib/youtube');
 const { createSendApi } = require('./lib/sendapi');
 const { SecretStore, acquireSendLock } = require('./lib/tokens');
 const { TwitchSender } = require('./lib/twitch-send');
+const { YouTubeSender } = require('./lib/youtube-send');
 const { createReplyTargets } = require('./lib/targets');
 
 // Когда приложение собрано в единый исполняемый файл (Node SEA, см.
@@ -245,7 +246,7 @@ const sendApi = createSendApi({
   getPort: () => actualPort,
   getTargets: () => replyTargets.get(),
   setTarget: (platform, id) => replyTargets.set(platform, id),
-  senders: { twitch: twitchSender },
+  senders: { twitch: twitchSender, youtube: new YouTubeSender({ store: secrets }) },
   disabled: () => (sendLock.held ? '' : sendLock.reason),
   notices: () => [secrets.problem],
   log: logErr,
