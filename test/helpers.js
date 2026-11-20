@@ -141,10 +141,11 @@ function freePort() {
   });
 }
 
-async function startServer(t, extraConfig = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multichat-test-'));
+// Pass shareDir to start a second copy in a folder a first one already uses.
+async function startServer(t, extraConfig = {}, shareDir = null) {
+  const dir = shareDir || fs.mkdtempSync(path.join(os.tmpdir(), 'multichat-test-'));
   const want = await freePort();
-  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ host: '127.0.0.1', port: want, sources: [], ...extraConfig }));
+  if (!shareDir) fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ host: '127.0.0.1', port: want, sources: [], ...extraConfig }));
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
     env: { ...process.env, MULTICHAT_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -162,7 +163,7 @@ async function startServer(t, extraConfig = {}) {
   });
   t.after(() => new Promise(resolve => {
     child.removeAllListeners('exit');
-    child.on('exit', () => { fs.rmSync(dir, { recursive: true, force: true }); resolve(); });
+    child.on('exit', () => { if (!shareDir) fs.rmSync(dir, { recursive: true, force: true }); resolve(); });
     child.kill();
   }));
   return { port, dir, origin: `http://127.0.0.1:${port}`, output: () => out };

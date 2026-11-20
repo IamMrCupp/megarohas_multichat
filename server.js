@@ -11,6 +11,8 @@ const VERSION = require('./package.json').version;
 const { TwitchSource, channelFromUrl } = require('./lib/twitch');
 const { YouTubeSource } = require('./lib/youtube');
 const { createSendApi } = require('./lib/sendapi');
+const { SecretStore, acquireSendLock } = require('./lib/tokens');
+const { TwitchSender } = require('./lib/twitch-send');
 const { createReplyTargets } = require('./lib/targets');
 
 // Когда приложение собрано в единый исполняемый файл (Node SEA, см.
@@ -65,6 +67,8 @@ function saveConfig() {
     port: config.port,
     sources: [...sources.values()].map(s => ({ id: s.id, url: s.url })),
   };
+  // the Twitch application's client ID is public, so it lives here; tokens don't
+  if (config.twitchClientId) out.twitchClientId = config.twitchClientId;
   const replyTo = replyTargets.toConfig();
   if (Object.keys(replyTo).length) out.replyTo = replyTo;
   try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(out, null, 2)); } catch (e) {
@@ -224,11 +228,26 @@ const replyTargets = createReplyTargets({
   onChange: () => { saveConfig(); broadcastStatus(); },
 });
 
+// Tokens and client secrets: secrets.json beside config.json, owner-only.
+// A second copy started from the same folder reads chat but doesn't send: two
+// processes sharing single-use refresh tokens would sign each other out.
+const secrets = new SecretStore(path.join(APP_DIR, 'secrets.json'), { log: logErr });
+const sendLock = acquireSendLock(APP_DIR);
+process.on('exit', () => sendLock.release());
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
+const twitchSender = new TwitchSender({
+  store: secrets,
+  getClientId: () => (typeof config.twitchClientId === 'string' ? config.twitchClientId : ''),
+  setClientId: id => { config.twitchClientId = id; saveConfig(); },
+});
+
 const sendApi = createSendApi({
   getPort: () => actualPort,
   getTargets: () => replyTargets.get(),
   setTarget: (platform, id) => replyTargets.set(platform, id),
-  senders: {},
+  senders: { twitch: twitchSender },
+  disabled: () => (sendLock.held ? '' : sendLock.reason),
+  notices: () => [secrets.problem],
   log: logErr,
 });
 
@@ -418,6 +437,7 @@ function printBanner() {
   console.log(`  Панель управления: http://127.0.0.1:${actualPort}/`);
   console.log(`  Оверлей для OBS:   http://127.0.0.1:${actualPort}/overlay`);
   console.log(`  Reply dock:        http://127.0.0.1:${actualPort}/dock`);
+  if (!sendLock.held) console.log('  ' + sendLock.reason);
   for (const o of lanOrigins()) {
     console.log(`  По локальной сети: ${o}/  (панель)  ·  ${o}/overlay`);
   }
@@ -434,7 +454,19 @@ function startSources() {
 }
 
 function listen(port, remaining) {
+  // Each attempt owns its own pair of listeners. Upstream passed the callback
+  // to server.listen(), which left the failed attempt's callback registered:
+  // after a port fallback it fired too, with the old port — banner printed
+  // twice, sources started twice, and for a moment the wrong port in
+  // actualPort, which the send gate checks Host and Origin against.
+  const onListening = () => {
+    server.removeListener('error', onErr);
+    actualPort = port;
+    printBanner();
+    startSources();
+  };
   const onErr = e => {
+    server.removeListener('listening', onListening);
     if (e.code === 'EADDRINUSE' && remaining > 0) {
       console.log(`Порт ${port} занят — пробую ${port + 1}…`);
       listen(port + 1, remaining - 1);
@@ -444,12 +476,8 @@ function listen(port, remaining) {
     }
   };
   server.once('error', onErr);
-  server.listen(port, config.host, () => {
-    server.removeListener('error', onErr);
-    actualPort = port;
-    printBanner();
-    startSources();
-  });
+  server.once('listening', onListening);
+  server.listen(port, config.host);
 }
 
 // ---------- оконный режим (--window) ----------
