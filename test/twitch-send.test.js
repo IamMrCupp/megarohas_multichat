@@ -22,7 +22,7 @@ async function waitFor(cond, ms = 3000) {
 // A fake Twitch with real token bookkeeping: single-use refresh tokens, access
 // tokens that must match, and a chat endpoint the test can script.
 async function fakeTwitch(t, { pendingPolls = 1 } = {}) {
-  const state = { n: 0, access: null, refresh: null, pendingLeft: pendingPolls, deny: null, chat: null, users: null, revoked: [] };
+  const state = { n: 0, access: null, refresh: null, pendingLeft: pendingPolls, deny: null, chat: null, users: null, streams: null, revoked: [] };
   const issue = () => {
     state.n++;
     state.access = 'FAKE_ACCESS_' + state.n;
@@ -47,6 +47,11 @@ async function fakeTwitch(t, { pendingPolls = 1 } = {}) {
       if (state.users) return state.users(c);
       if (c.query.login) return [200, { data: [{ id: '9001', login: c.query.login, display_name: c.query.login }] }];
       return [200, { data: [{ id: '1001', login: 'example_user', display_name: 'Example_User' }] }];
+    },
+    'GET /helix/streams': c => {
+      if (!authed(c)) return [401, { status: 401, message: 'Invalid OAuth token' }];
+      if (state.streams) return state.streams(c);
+      return [200, { data: [{ user_login: 'examplechannel', type: 'live', viewer_count: 42, started_at: '2026-11-20T10:00:00Z' }] }];
     },
     'POST /helix/chat/messages': c => {
       if (!authed(c)) return [401, { status: 401, message: 'Invalid OAuth token' }];
@@ -489,4 +494,41 @@ test('a second copy of the server does not send, and says why', async t => {
   assert.match(st.json.notices[1], /moved to secrets\.json\.broken-/);
   assert.equal(st.json.platforms.twitch.clientId, undefined);
   assert.equal(up.calls.length, calls);            // nothing reached Twitch
+});
+
+// ---------- viewer counts ----------
+
+test('viewers: Get Streams with the dock\'s sign-in; offline channels are simply absent', async t => {
+  const { up, state } = await fakeTwitch(t);
+  const { sender } = makeSender(t, up);
+  assert.deepEqual(await sender.viewers(['examplechannel']), { state: 'signed_out', note: 'Sign in to Twitch on /setup to show viewers.' });
+  assert.equal(up.calls.length, 0);                    // not signed in: nothing is asked
+  await signIn(sender);
+  assert.deepEqual(await sender.viewers(['examplechannel', 'second']), { state: 'ok', live: { examplechannel: 42 } });
+  const call = up.calls.at(-1);
+  assert.equal(call.key, 'GET /helix/streams');
+  assert.equal(call.headers.authorization, 'Bearer ' + state.access);
+  assert.equal(call.headers['client-id'], CLIENT_ID);
+  state.streams = () => [200, { data: [] }];
+  assert.deepEqual(await sender.viewers(['examplechannel']), { state: 'ok', live: {} });
+  state.streams = () => [200, { data: [{ user_login: 'ExampleChannel', type: 'live', viewer_count: 7 }, { user_login: 'rerun', type: '', viewer_count: 3 }] }];
+  assert.deepEqual((await sender.viewers(['examplechannel'])).live, { examplechannel: 7 });
+});
+
+test('viewers: rate limit holds off, a dead token says signed out, errors are errors', async t => {
+  const { up, state } = await fakeTwitch(t);
+  const { sender, clock } = makeSender(t, up);
+  await signIn(sender);
+  state.streams = () => [429, { status: 429, message: 'Too Many Requests' }, { 'Ratelimit-Reset': String(Math.floor(clock.t / 1000) + 20) }];
+  assert.equal((await sender.viewers(['examplechannel'])).state, 'error');
+  const n = up.count('GET /helix/streams');
+  assert.equal((await sender.viewers(['examplechannel'])).state, 'error');
+  assert.equal(up.count('GET /helix/streams'), n);     // held locally
+  clock.t += 21000;
+  state.streams = () => [503, undefined];
+  assert.deepEqual(await sender.viewers(['examplechannel']), { state: 'error', note: 'Twitch answered HTTP 503.' });
+  state.streams = null;
+  state.refresh = 'FAKE_REFRESH_GONE';
+  clock.t += 14400 * 1000;
+  assert.equal((await sender.viewers(['examplechannel'])).state, 'signed_out');
 });

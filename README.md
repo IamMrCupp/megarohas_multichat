@@ -155,12 +155,47 @@ Append them to the overlay URL, joined with `&`, for example
 | `ts=1` | show timestamps |
 | `origcolors=1` | native Twitch nickname colors instead of the pastel palette |
 | `limit=40` | cap on messages in the DOM (a safety net, default 60) |
+| `viewers=1` | show the viewer bar: each platform's graphic and how many are watching. `viewers=top` / `viewers=bottom` pins it; `1` puts it at the edge messages leave by |
+| `viewerstyle=inside` | put the number inside the platform graphic (default: beside it) |
+| `viewersoffline=hide` | drop a platform's chip while it isn't live |
+| `viewersfmt=full` | never abbreviate — `12,345` instead of `12.3K` |
 
 **Custom fonts**: drop a `.ttf` / `.otf` / `.woff` / `.woff2` into the `fonts` folder;
 the family name is the file name without the extension: `fonts\Rubik.ttf` → `?font=Rubik`.
 
 **The look** is fully customizable in `public/overlay.css` — the variables are at the top
 of the file (bubble background, corner radius, padding, animation durations, etc.).
+
+## Viewer bar
+
+`?viewers=1` adds a strip to the overlay with one chip per platform — the Twitch and YouTube
+graphics and the live viewer count, beside the graphic or (`viewerstyle=inside`) inside it. In
+the default layout it sits across the top, so chat scrolls up and slides away under it.
+
+- **Counts, not names.** A platform that isn't live says `off`; one the tool can't read says
+  `–`. It never shows a zero nobody measured.
+- **Twitch** needs the same sign-in as the reply dock (`/setup`) — the count comes from
+  Twitch's official API, no extra permission. Not signed in → `–`.
+- **YouTube** needs nothing: the count comes from the watch page's own interface, the same
+  free path the chat reader uses. No API quota.
+- **Skinnable like the rest.** Every colour, size and gap is a `--viewers-*` variable at the
+  top of `public/overlay.css` — strip background, alignment, chip padding, the two brand
+  fills, the dimming for an offline platform. The chips are plain elements (`.vbar`,
+  `.vchip`, `.vshape`, `.vnum`) if you want to go further.
+
+## Free by default, official where you ask for it
+
+Where there's a free way to do something, that's the default. Where the platform's official
+API can do the same job, it's an option you switch on — and
+[docs/SETUP-SENDING.md](docs/SETUP-SENDING.md) has the steps.
+
+| What | Default | Official option |
+|---|---|---|
+| Reading Twitch chat | anonymous IRC — free, no sign-in | not built ([#12](https://github.com/IamMrCupp/megarohas_multichat/issues/12)) |
+| Reading YouTube chat | the chat page's own interface — free, no quota | not built ([#12](https://github.com/IamMrCupp/megarohas_multichat/issues/12)) |
+| YouTube viewer count | the watch page's own interface — free, no quota | `"youtubeViewers": "api"` in `config.json`, or the switch on `/setup` — 1 quota unit a minute |
+| Twitch viewer count | — (no free source built) | Twitch's API with the dock's sign-in — always, no cost |
+| Sending to either chat | — (there is no free way to send) | the official APIs — always |
 
 ## How it works
 

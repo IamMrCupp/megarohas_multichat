@@ -434,3 +434,64 @@ test('length: a Both that fits Twitch but not YouTube sends to neither', async t
   const ok = await app.post('/api/send', { target: 'both', text: 'x'.repeat(200) });
   assert.deepEqual([ok.json.results.twitch.ok, ok.json.results.youtube.ok], [true, true]);
 });
+
+// ---------- viewer count through the official API (opt-in) ----------
+
+test('viewers via the API: one videos.list a poll, counted against the quota estimate', async t => {
+  const c = await setup(t);
+  const used = () => c.sender.setupState({ port: c.app.port }).quota.usedTodayEstimate;
+  const before = used();
+  c.state.video = () => [200, { items: [{ id: VIDEO, liveStreamingDetails: { actualStartTime: '2026-11-20T10:00:00Z', concurrentViewers: '152', activeLiveChatId: 'FAKE_LIVE_CHAT_ID' } }] }];
+  assert.deepEqual(await c.sender.viewers(VIDEO), { live: true, count: 152 });
+  assert.equal(used(), before + 1);
+  assert.deepEqual(c.up.calls.at(-1).query, { part: 'liveStreamingDetails', id: VIDEO });
+  // not started yet, and ended
+  c.state.video = () => [200, { items: [{ id: VIDEO, liveStreamingDetails: { scheduledStartTime: '2030-01-01T00:00:00Z' } }] }];
+  assert.deepEqual(await c.sender.viewers(VIDEO), { live: false, count: null });
+  c.state.video = () => [200, { items: [{ id: VIDEO, liveStreamingDetails: { actualStartTime: '2026-11-20T10:00:00Z', actualEndTime: '2026-11-20T12:00:00Z' } }] }];
+  assert.deepEqual(await c.sender.viewers(VIDEO), { live: false, count: null });
+  // live but the owner hid the count: can't tell, so the caller falls back to the free path
+  c.state.video = () => [200, { items: [{ id: VIDEO, liveStreamingDetails: { actualStartTime: '2026-11-20T10:00:00Z' } }] }];
+  assert.equal(await c.sender.viewers(VIDEO), null);
+  // still never a read of the chat
+  assert.ok(!c.up.calls.some(x => x.method === 'GET' && x.path.includes('liveChat')));
+});
+
+test('viewers via the API: no answer when signed out or out of quota — and nothing is spent asking', async t => {
+  const c = await setup(t, { signIn: false });
+  assert.equal(await c.sender.viewers(VIDEO), null);
+  assert.equal(c.up.calls.length, 0);
+  await c.signIn();
+  assert.equal(await c.sender.viewers(null), null);
+  c.state.video = () => gErr(403, 'quotaExceeded', 'The request cannot be completed because you have exceeded your quota.');
+  assert.equal(await c.sender.viewers(VIDEO), null);
+  const n = c.up.calls.length;
+  assert.equal(await c.sender.viewers(VIDEO), null);
+  assert.equal(c.up.calls.length, n);                // quota gone: no further calls until the reset
+  assert.equal((await c.sender.send('x', TARGET)).code, 'quota_exhausted');
+});
+
+test('viewer source: free unless switched, switched through the gated setup route', async t => {
+  const { up } = await fakeGoogle(t);
+  const cfg = { source: 'free' };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'multichat-youtube-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const sender = new YouTubeSender({
+    store: new SecretStore(path.join(dir, 'secrets.json')),
+    endpoints: { token: up.base + '/token', revoke: up.base + '/revoke', api: up.base + '/youtube/v3' },
+    getViewerSource: () => cfg.source, setViewerSource: s => { cfg.source = s; },
+  });
+  const app = await startApp({ senders: { youtube: sender } });
+  t.after(app.close);
+  assert.equal(sender.setupState({ port: app.port }).viewerSource, 'free');
+  assert.equal((await app.post('/api/setup/youtube/viewers', { source: 'api' }, { 'x-dock-token': 'wrong' })).status, 403);
+  assert.equal((await app.post('/api/setup/youtube/viewers', { source: 'everything' })).json.code, 'bad_source');
+  assert.equal(cfg.source, 'free');
+  assert.equal((await app.post('/api/setup/youtube/viewers', { source: 'api' })).status, 200);
+  assert.equal(cfg.source, 'api');
+  const st = await app.get('/api/setup/state');
+  assert.equal(st.json.platforms.youtube.viewerSource, 'api');
+  assert.equal(st.json.platforms.youtube.viewerPollCost, 1);
+  await app.post('/api/setup/youtube/viewers', { source: 'free' });
+  assert.equal(cfg.source, 'free');
+});

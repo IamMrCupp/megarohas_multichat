@@ -156,6 +156,17 @@ sections.youtube = (body, p) => {
   const src = el('a', '', 'Google\'s quota table'); src.href = 'https://developers.google.com/youtube/v3/determine_quota_cost'; src.target = '_blank'; src.rel = 'noopener';
   qn.appendChild(src);
   body.appendChild(qn);
+  // Where the overlay's viewer count comes from. Free unless switched.
+  const vs = el('div', 'note');
+  vs.append(`Viewer count on the overlay: ${p.viewerSource === 'api' ? 'official API' : 'free (the watch page, no quota)'}. `);
+  const api = p.viewerSource === 'api';
+  body.appendChild(vs);
+  const vrow = el('div', 'row');
+  vrow.appendChild(button(api ? 'Use the free source' : 'Use the official API', '', b => act('/api/setup/youtube/viewers', { source: api ? 'free' : 'api' }, b)));
+  body.appendChild(vrow);
+  body.appendChild(el('div', 'note', api
+    ? `Costs ${p.viewerPollCost} unit a minute while a page is open — about 60 units an hour, roughly 3 replies' worth. Falls back to the free source if the API can't answer. Takes effect on the next server start for the polling pace.`
+    : `The official API costs ${p.viewerPollCost} quota unit a minute while a page is open. The free source costs nothing and is the default.`));
   body.appendChild(el('div', 'note', 'Asks Google for one permission, youtube.force-ssl — one of the two Google accepts for posting to live chat. Google has no chat-only permission, so the consent screen describes more than this server uses. It only ever posts chat messages.'));
 };
 
