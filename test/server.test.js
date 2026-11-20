@@ -4,7 +4,7 @@
 // overlay's own routes behave as they did.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { request, startServer } = require('./helpers');
+const { request, startServer, firstEvent } = require('./helpers');
 
 test('server: dock and setup pages are served, overlay routes are unchanged', async t => {
   const s = await startServer(t);
@@ -198,4 +198,35 @@ test('server: YouTube client goes to secrets.json (0600), never config.json; the
   const log = path.join(s.dir, 'error.log');
   assert.ok(!fs.existsSync(log) || !fs.readFileSync(log, 'utf8').includes('FAKE_'));
   assert.ok(!s.output().includes('FAKE_'));
+});
+
+test('server: viewer counts ride the event stream; the bar\'s files are served; the official source is an opt-in saved to config', async t => {
+  const fs = require('fs');
+  const path = require('path');
+  const s = await startServer(t);
+  const hello = await firstEvent(s.port);
+  assert.equal(hello.type, 'hello');
+  const none = { state: 'none', count: null, note: '' };
+  assert.deepEqual(hello.viewers, { twitch: none, youtube: none });       // no sources: nothing asked, nothing shown
+  assert.deepEqual((await request(s.port, { path: '/api/state' })).json.viewers, { twitch: none, youtube: none });
+
+  const js = await request(s.port, { path: '/viewer-bar.js' });
+  assert.equal(js.status, 200);
+  assert.ok(js.text.includes('ViewerBar'));
+  const overlay = await request(s.port, { path: '/overlay?viewers=1' });
+  assert.ok(overlay.text.includes('id="viewers"') && overlay.text.includes('/viewer-bar.js'));
+  const css = await request(s.port, { path: '/overlay.css' });
+  for (const v of ['--viewers-bg', '--viewers-twitch', '--viewers-youtube', '--viewers-align', '.vchip.inside']) assert.ok(css.text.includes(v), v);
+
+  const cfg = () => JSON.parse(fs.readFileSync(path.join(s.dir, 'config.json'), 'utf8'));
+  const token = (await request(s.port, { path: '/api/dock/session' })).json.token;
+  const headers = { origin: s.origin, 'x-dock-token': token };
+  let st = await request(s.port, { path: '/api/setup/state', headers: { 'x-dock-token': token } });
+  assert.equal(st.json.platforms.youtube.viewerSource, 'free');           // free is the default
+  assert.equal((await request(s.port, { method: 'POST', path: '/api/setup/youtube/viewers', body: { source: 'api' }, headers })).status, 200);
+  assert.equal(cfg().youtubeViewers, 'api');
+  st = await request(s.port, { path: '/api/setup/state', headers: { 'x-dock-token': token } });
+  assert.equal(st.json.platforms.youtube.viewerSource, 'api');
+  await request(s.port, { method: 'POST', path: '/api/setup/youtube/viewers', body: { source: 'free' }, headers });
+  assert.equal(cfg().youtubeViewers, undefined);
 });

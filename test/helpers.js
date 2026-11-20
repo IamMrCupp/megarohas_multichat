@@ -44,6 +44,23 @@ function request(port, { method = 'GET', path = '/', headers = {}, body } = {}) 
   });
 }
 
+// The first data frame of the server's event stream (the "hello"), then hang up.
+function firstEvent(port) {
+  return new Promise((resolve, reject) => {
+    const req = http.get({ host: '127.0.0.1', port, path: '/events', headers: { host: `127.0.0.1:${port}` } }, res => {
+      let buf = '';
+      res.setEncoding('utf8');
+      res.on('data', c => {
+        buf += c;
+        const m = buf.match(/^data: (.*)$/m);
+        if (m && buf.includes('\n\n', buf.indexOf(m[0]))) { req.destroy(); resolve(JSON.parse(m[1])); }
+      });
+    });
+    req.on('error', e => { if (e.code !== 'ECONNRESET') reject(e); });
+    setTimeout(() => { req.destroy(); reject(new Error('no event')); }, 5000).unref();
+  });
+}
+
 // A send API on its own little server, the way server.js mounts it.
 // Reply targets in the shape lib/targets.js hands to the send API.
 const TARGETS = {
@@ -169,4 +186,4 @@ async function startServer(t, extraConfig = {}, shareDir = null) {
   return { port, dir, origin: `http://127.0.0.1:${port}`, output: () => out };
 }
 
-module.exports = { TARGETS, startServer, listen, close, request, startApp, fakeSender, fakeUpstream };
+module.exports = { TARGETS, firstEvent, startServer, listen, close, request, startApp, fakeSender, fakeUpstream };

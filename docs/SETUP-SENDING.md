@@ -210,3 +210,42 @@ dock's counter follows whichever applies to what you're aiming at, and the serve
 before sending — so an over-long YouTube reply costs no quota, and a *Both* that fits Twitch
 but not YouTube goes to neither rather than to Twitch alone. The 200 is from YouTube's Help
 pages; the API reference itself gives no number.
+
+## Viewer counts and the official-API switches
+
+The overlay's viewer bar (`?viewers=1`) needs no setup of its own:
+
+- **Twitch** — uses the Twitch sign-in above. Twitch's
+  [Get Streams](https://dev.twitch.tv/docs/api/reference/#get-streams) call takes any signed-in
+  token and no extra permission, so there's nothing more to approve. Not signed in → the chip
+  shows `–`.
+- **YouTube** — works with no Google project at all. The count is read from the watch page's
+  own interface, like the chat. It's unofficial: if YouTube changes its internals the chip
+  shows `–` until `lib/viewers.js` is updated; nothing else is affected.
+
+### Using the official API for the YouTube count instead
+
+If you'd rather have Google's own number than the page's:
+
+1. Do the YouTube setup above (Google Cloud project, OAuth client, sign in).
+2. On **/setup**, under YouTube, click **Use the official API** — or put
+   `"youtubeViewers": "api"` in `config.json`.
+3. Restart the server so it picks up the slower polling pace.
+
+What it costs: one `videos.list` call a minute while an overlay or dock is open — **1 quota
+unit a minute**, about 60 an hour, out of the same 10,000 a day your replies draw on
+([quota table](https://developers.google.com/youtube/v3/determine_quota_cost)). A four-hour
+stream is about 240 units, twelve replies' worth.
+
+If the API can't answer — signed out, quota used up, or the count hidden on the broadcast
+(Google only returns
+[`concurrentViewers`](https://developers.google.com/youtube/v3/docs/videos) when it isn't) —
+the free source answers instead. Switching back is the same button.
+
+### What isn't switchable yet
+
+Reading chat is free-path only on both platforms. Official reading as an option — Twitch
+through its authenticated chat API, YouTube through `liveChatMessages` — is written up in
+[#12](https://github.com/IamMrCupp/megarohas_multichat/issues/12). The YouTube half costs
+real quota (5 units a poll), which is why it's an option to design carefully and not a
+default.

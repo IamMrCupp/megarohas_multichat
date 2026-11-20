@@ -7,7 +7,9 @@
 <link rel="stylesheet" href="/overlay.css">
 </head>
 <body>
+<div id="viewers" class="vbar" hidden></div>
 <div id="chat"></div>
+<script src="/viewer-bar.js"></script>
 <script>
 'use strict';
 const q = new URLSearchParams(location.search);
@@ -37,6 +39,18 @@ fetch('/api/fonts').then(r => r.json()).then(files => {
 }).catch(() => {});
 
 if (DIR_TOP) document.body.classList.add('dir-top');
+
+// ?viewers=1 — a bar with each platform's graphic and its live viewer count.
+// Look: the --viewers-* variables at the top of overlay.css.
+const VB = window.ViewerBar;
+const VOPTS = VB.options(q, DIR_TOP);
+const vbar = document.getElementById('viewers');
+let vbarH = 0;       // how much of the window the bar takes from the chat
+if (VOPTS.on) {
+  vbar.hidden = false;
+  document.body.classList.add('has-vbar');
+  if (VOPTS.edge === 'bottom') { vbar.classList.add('bottom'); document.body.classList.add('vbar-bottom'); }
+}
 
 const chat = document.getElementById('chat');
 const byId = new Map();
@@ -210,7 +224,7 @@ function animateOut(wrap, instant) {
 function trimAll(instant) {
   const live = [...chat.children].filter(c => !c.dataset.out);
   const newestFirst = DIR_TOP ? live : live.reverse();
-  const avail = window.innerHeight - 20; // паддинги контейнера
+  const avail = window.innerHeight - 20 - vbarH; // паддинги контейнера, minus the viewer bar
   let used = 0;
   for (let i = 0; i < newestFirst.length; i++) {
     const c = newestFirst[i];
@@ -308,6 +322,33 @@ function clearSource(source, instant) {
 
 window.addEventListener('resize', () => trimAll());
 
+function renderViewers(viewers) {
+  if (!VOPTS.on) return;
+  vbar.textContent = '';
+  for (const c of VB.chips(viewers, VOPTS)) {
+    const chip = el('span', `vchip ${c.platform} ${c.state} ${VOPTS.style}`);
+    chip.title = c.title;
+    if (VOPTS.style === 'inside') {
+      const shape = el('span', 'vshape');
+      const num = el('span', 'vnum'); num.textContent = c.text;
+      shape.appendChild(num);
+      chip.appendChild(shape);
+    } else {
+      if (P_ICONS[c.platform]) chip.appendChild(svgSpan(P_ICONS[c.platform]));
+      const num = el('span', 'vnum'); num.textContent = c.text;
+      chip.appendChild(num);
+    }
+    vbar.appendChild(chip);
+  }
+  // the chat column gives up exactly the room the bar takes
+  const h = VB.barHeight(vbar.offsetHeight, getComputedStyle(vbar), VOPTS.edge, vbar.childElementCount);
+  if (h !== vbarH) {
+    vbarH = h;
+    document.body.style.setProperty('--vbar-h', h + 'px');
+    trimAll();
+  }
+}
+
 const es = new EventSource('/events');
 es.onmessage = e => {
   let d;
@@ -315,10 +356,12 @@ es.onmessage = e => {
   switch (d.type) {
     case 'hello':
       clearSource(null, true);
+      renderViewers(d.viewers);   // before the history: it decides how much room the chat has
       for (const m of d.history || []) {
         if (!byId.has(m.id)) place(m, true);
       }
       break;
+    case 'viewers': renderViewers(d.viewers); break;
     case 'msg': enqueue(d); break;
     case 'remove': removeById(d.id); break;
     case 'removeAuthor': removeAuthor(d.source, d.key); break;

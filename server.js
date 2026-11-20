@@ -14,6 +14,7 @@ const { createSendApi } = require('./lib/sendapi');
 const { SecretStore, acquireSendLock } = require('./lib/tokens');
 const { TwitchSender } = require('./lib/twitch-send');
 const { YouTubeSender } = require('./lib/youtube-send');
+const { createViewerCounts, fetchYouTubeViewers } = require('./lib/viewers');
 const { createReplyTargets } = require('./lib/targets');
 
 // Когда приложение собрано в единый исполняемый файл (Node SEA, см.
@@ -70,6 +71,8 @@ function saveConfig() {
   };
   // the Twitch application's client ID is public, so it lives here; tokens don't
   if (config.twitchClientId) out.twitchClientId = config.twitchClientId;
+  // opt-ins to an official API where a free path is the default
+  if (config.youtubeViewers === 'api') out.youtubeViewers = 'api';
   const replyTo = replyTargets.toConfig();
   if (Object.keys(replyTo).length) out.replyTo = replyTo;
   try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(out, null, 2)); } catch (e) {
@@ -242,14 +245,45 @@ const twitchSender = new TwitchSender({
   setClientId: id => { config.twitchClientId = id; saveConfig(); },
 });
 
+const youtubeSender = new YouTubeSender({
+  store: secrets,
+  getViewerSource: () => (config.youtubeViewers === 'api' ? 'api' : 'free'),
+  setViewerSource: source => { config.youtubeViewers = source; saveConfig(); },
+});
+
 const sendApi = createSendApi({
   getPort: () => actualPort,
   getTargets: () => replyTargets.get(),
   setTarget: (platform, id) => replyTargets.set(platform, id),
-  senders: { twitch: twitchSender, youtube: new YouTubeSender({ store: secrets }) },
+  senders: { twitch: twitchSender, youtube: youtubeSender },
   disabled: () => (sendLock.held ? '' : sendLock.reason),
   notices: () => [secrets.problem],
   log: logErr,
+});
+
+// ---------- viewer counts (the overlay's bar) ----------
+// Twitch through the official API with the dock's sign-in; YouTube through
+// the watch page's own interface, so no API quota is spent. Only polled while
+// a page is connected, and never with the tokens in a copy that doesn't own
+// sending.
+const viewerCounts = createViewerCounts({
+  listSources: () => [...sources.values()],
+  twitch: logins => (sendLock.held
+    ? twitchSender.viewers(logins)
+    : Promise.resolve({ state: 'signed_out', note: 'Viewer counts for Twitch come from the copy of the server that owns sending.' })),
+  // Free by default. With "youtubeViewers": "api" in config.json (or the switch
+  // on /setup) the official API is asked first; if it can't answer — not
+  // signed in, quota gone, count hidden — the free path still does.
+  youtube: async adapter => {
+    if (config.youtubeViewers === 'api' && sendLock.held) {
+      const official = await youtubeSender.viewers(adapter.videoId);
+      if (official) return official;
+    }
+    return fetchYouTubeViewers({ videoId: adapter.videoId, apiKey: adapter.apiKey, clientVersion: adapter.clientVersion });
+  },
+  intervalMs: config.youtubeViewers === 'api' ? 60000 : 30000,
+  active: () => clients.size > 0,
+  onChange: viewers => broadcast({ type: 'viewers', viewers }),
 });
 
 // ---------- test messages (style the overlay without being live) ----------
@@ -338,6 +372,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/dock') return serveFile(res, 'dock.html');
       if (p === '/setup') return serveFile(res, 'setup.html');
       if (p === '/dock-logic.js') return serveFile(res, 'dock-logic.js');
+      if (p === '/viewer-bar.js') return serveFile(res, 'viewer-bar.js');
       if (p === '/overlay') return serveFile(res, 'overlay.html');
       if (p === '/overlay.css') return serveFile(res, 'overlay.css');
       if (p === '/favicon.svg') return serveFile(res, 'favicon.svg');
@@ -349,12 +384,13 @@ const server = http.createServer(async (req, res) => {
           'Connection': 'keep-alive',
         });
         res.write(':ok\n\n');
-        res.write(sseFrame({ type: 'hello', history, sources: statusList() }));
+        res.write(sseFrame({ type: 'hello', history, sources: statusList(), viewers: viewerCounts.get() }));
         clients.add(res);
+        if (clients.size === 1) viewerCounts.refresh().catch(() => {});   // first page in: don't wait for the next tick
         req.on('close', () => clients.delete(res));
         return;
       }
-      if (p === '/api/state') return json(res, 200, { version: VERSION, host: config.host, port: actualPort, lan: lanOrigins(), sources: statusList() });
+      if (p === '/api/state') return json(res, 200, { version: VERSION, host: config.host, port: actualPort, lan: lanOrigins(), sources: statusList(), viewers: viewerCounts.get() });
       if (p === '/api/fonts') {
         let files = [];
         try { files = fs.readdirSync(FONTS_DIR).filter(f => FONT_RE.test(f)).sort(); } catch (e) {}
@@ -465,6 +501,7 @@ function listen(port, remaining) {
     actualPort = port;
     printBanner();
     startSources();
+    viewerCounts.start();
   };
   const onErr = e => {
     server.removeListener('listening', onListening);

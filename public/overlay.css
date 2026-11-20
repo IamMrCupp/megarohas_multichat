@@ -23,6 +23,33 @@
   --sys-color: #c8c8d8;     /* цвет системных строк (сабы, рейды) */
 }
 
+/* --- viewer bar (?viewers=1) ---------------------------------------
+   A strip with one chip per platform: its graphic and how many are
+   watching. Off unless the overlay URL says ?viewers=1. Everything about
+   its look is a variable here; the chips are plain elements you can
+   restyle further down (.vbar, .vchip, .vshape, .vnum).
+   ?viewerstyle=inside puts the number inside the platform graphic. */
+:root {
+  --viewers-size: 1em;                 /* text size of the bar, relative to --size */
+  --viewers-pad: 6px 10px;             /* padding around the row of chips */
+  --viewers-gap: 8px;                  /* space between chips */
+  --viewers-align: flex-start;         /* flex-start | center | flex-end | space-between */
+  --viewers-bg: rgba(10, 10, 14, 0.78);/* the strip behind the chips; transparent for none */
+  --viewers-radius: 10px;              /* corner radius of the strip */
+  --viewers-margin: 10px;              /* gap between the strip and the overlay edges */
+  --viewers-chip-bg: transparent;      /* background of a "beside" chip */
+  --viewers-chip-pad: 2px 4px;
+  --viewers-chip-radius: 8px;
+  --viewers-color: #ffffff;            /* the number */
+  --viewers-weight: 700;
+  --viewers-icon: 1.25em;              /* platform graphic size in "beside" style */
+  --viewers-twitch: #9146ff;           /* fill of the Twitch shape in "inside" style */
+  --viewers-youtube: #ff0000;          /* fill of the YouTube shape in "inside" style */
+  --viewers-inside-color: #ffffff;     /* the number inside a shape */
+  --viewers-offline-opacity: 0.45;     /* a platform that isn't live */
+  --viewers-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body {
@@ -192,3 +219,83 @@ img.badge { border-radius: 3px; }
 
 /* цвета ников по умолчанию, если платформа цвет не дала,
    назначаются автоматически из палитры ниже (data-hue) */
+
+/* ============================================================
+   Viewer bar. Sits above the chat column (z-index), so messages
+   leaving the chat slide away underneath it.
+   ============================================================ */
+.vbar {
+  position: fixed;
+  left: var(--viewers-margin);
+  right: var(--viewers-margin);
+  top: var(--viewers-margin);
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: var(--viewers-align);
+  gap: var(--viewers-gap);
+  padding: var(--viewers-pad);
+  background: var(--viewers-bg);
+  border-radius: var(--viewers-radius);
+  box-shadow: var(--viewers-shadow);
+  font-family: var(--font);
+  font-size: var(--size);
+  color: var(--viewers-color);
+  line-height: 1.2;
+}
+.vbar.bottom { top: auto; bottom: var(--viewers-margin); }
+.vbar:empty { display: none; }
+
+.vchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  padding: var(--viewers-chip-pad);
+  background: var(--viewers-chip-bg);
+  border-radius: var(--viewers-chip-radius);
+  font-size: var(--viewers-size);
+  font-weight: var(--viewers-weight);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transition: opacity 0.3s;
+}
+.vchip.offline, .vchip.unknown { opacity: var(--viewers-offline-opacity); }
+.vchip svg.platform { width: var(--viewers-icon); height: var(--viewers-icon); margin: 0; flex: none; }
+
+/* --- number inside the graphic --- */
+.vchip.inside { padding: 0; background: none; }
+.vchip.inside .vshape {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.6em;
+  color: var(--viewers-inside-color);
+}
+/* YouTube: the red rounded box, play triangle, then the number */
+.vchip.inside.youtube .vshape {
+  background: var(--viewers-youtube);
+  border-radius: 0.5em / 0.62em;
+  padding: 0.22em 0.6em 0.22em 0.5em;
+  gap: 0.32em;
+}
+.vchip.inside.youtube .vshape::before {
+  content: "";
+  border-style: solid;
+  border-width: 0.3em 0 0.3em 0.5em;
+  border-color: transparent transparent transparent var(--viewers-inside-color);
+}
+/* Twitch: the purple chat-bubble outline — cut corner, tail underneath */
+.vchip.inside.twitch .vshape {
+  background: var(--viewers-twitch);
+  padding: 0.22em 0.6em calc(0.22em + 0.34em) 0.62em;
+  clip-path: polygon(
+    0.42em 0, 100% 0, 100% calc(100% - 0.78em),
+    calc(100% - 0.44em) calc(100% - 0.34em),
+    1.5em calc(100% - 0.34em), 1.06em 100%,
+    1.06em calc(100% - 0.34em), 0 calc(100% - 0.34em), 0 0.42em);
+}
+
+/* room for the bar: the chat column stops short of it */
+body.has-vbar #chat { padding-top: calc(10px + var(--vbar-h, 0px)); }
+body.has-vbar.vbar-bottom #chat { padding-top: 10px; padding-bottom: calc(10px + var(--vbar-h, 0px)); }
