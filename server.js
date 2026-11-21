@@ -373,6 +373,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/setup') return serveFile(res, 'setup.html');
       if (p === '/dock-logic.js') return serveFile(res, 'dock-logic.js');
       if (p === '/viewer-bar.js') return serveFile(res, 'viewer-bar.js');
+      if (p === '/overlay-options.js') return serveFile(res, 'overlay-options.js');
       if (p === '/overlay') return serveFile(res, 'overlay.html');
       if (p === '/overlay.css') return serveFile(res, 'overlay.css');
       if (p === '/favicon.svg') return serveFile(res, 'favicon.svg');

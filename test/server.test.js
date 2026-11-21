@@ -215,7 +215,11 @@ test('server: viewer counts ride the event stream; the bar\'s files are served; 
   assert.ok(js.text.includes('ViewerBar'));
   const overlay = await request(s.port, { path: '/overlay?viewers=1' });
   assert.ok(overlay.text.includes('id="viewers"') && overlay.text.includes('/viewer-bar.js'));
+  const oo = await request(s.port, { path: '/overlay-options.js' });
+  assert.equal(oo.status, 200);
+  assert.ok(oo.text.includes('OverlayOptions') && overlay.text.includes('/overlay-options.js'));
   const css = await request(s.port, { path: '/overlay.css' });
+  assert.match(css.text, /--bg:\s*rgba\(10, 10, 14, var\(--bg-opacity\)\)/);   // ?bg=N only works while --bg reads it
   for (const v of ['--viewers-bg', '--viewers-twitch', '--viewers-youtube', '--viewers-align', '.vchip.inside']) assert.ok(css.text.includes(v), v);
 
   const cfg = () => JSON.parse(fs.readFileSync(path.join(s.dir, 'config.json'), 'utf8'));

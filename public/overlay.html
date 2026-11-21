@@ -9,6 +9,7 @@
 <body>
 <div id="viewers" class="vbar" hidden></div>
 <div id="chat"></div>
+<script src="/overlay-options.js"></script>
 <script src="/viewer-bar.js"></script>
 <script>
 'use strict';
@@ -25,6 +26,9 @@ const SHOW_BADGES = q.get('badges') !== '0';     // ?badges=0 — скрыть �
 // имя семейства = имя файла без расширения)
 const rootStyle = document.documentElement.style;
 if (+q.get('size') > 0) rootStyle.setProperty('--size', (+q.get('size')) + 'px');
+// ?bg=88 — how solid the message background is, 0–100 (--bg-opacity in overlay.css)
+const BG_OPACITY = window.OverlayOptions.bubbleOpacity(q);
+if (BG_OPACITY !== null) rootStyle.setProperty('--bg-opacity', String(BG_OPACITY));
 const FONT = (q.get('font') || '').trim();
 if (FONT) rootStyle.setProperty('--font', JSON.stringify(FONT.replace(/["\\]/g, '')) + ', "Segoe UI", system-ui, sans-serif');
 fetch('/api/fonts').then(r => r.json()).then(files => {
