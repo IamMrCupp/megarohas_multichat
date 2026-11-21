@@ -495,3 +495,21 @@ test('viewer source: free unless switched, switched through the gated setup rout
   await app.post('/api/setup/youtube/viewers', { source: 'free' });
   assert.equal(cfg.source, 'free');
 });
+
+test('auth change is announced: sign-in landing, sign-out, client change — not a failed callback', async t => {
+  const c = await setup(t, { signIn: false });
+  let n = 0;
+  c.sender.onAuthChange = () => { n++; throw new Error('listener bug'); };
+  const auth = await c.begin();
+  assert.equal((await c.comeBack({ state: auth.searchParams.get('state'), error: 'access_denied' })).status, 400);
+  assert.equal(n, 0);                                  // cancelled at Google: nothing changed
+  await c.signIn();
+  assert.equal(n, 1);
+  assert.equal(c.sender.status().signedIn, true);      // the throwing listener didn't undo it
+  assert.equal((await c.app.post('/api/setup/youtube/signout', {})).status, 200);
+  assert.equal(n, 2);
+  await c.app.post('/api/setup/youtube/client', { clientId: CLIENT_ID, clientSecret: '' });
+  assert.equal(n, 2);                                  // same client, secret kept: nothing changed
+  await c.app.post('/api/setup/youtube/client', { clientId: '' });
+  assert.equal(n, 3);
+});

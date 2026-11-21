@@ -243,12 +243,14 @@ const twitchSender = new TwitchSender({
   store: secrets,
   getClientId: () => (typeof config.twitchClientId === 'string' ? config.twitchClientId : ''),
   setClientId: id => { config.twitchClientId = id; saveConfig(); },
+  onAuthChange: () => viewersStale(),
 });
 
 const youtubeSender = new YouTubeSender({
   store: secrets,
   getViewerSource: () => (config.youtubeViewers === 'api' ? 'api' : 'free'),
   setViewerSource: source => { config.youtubeViewers = source; saveConfig(); },
+  onAuthChange: () => viewersStale(),
 });
 
 const sendApi = createSendApi({
@@ -285,6 +287,13 @@ const viewerCounts = createViewerCounts({
   active: () => clients.size > 0,
   onChange: viewers => broadcast({ type: 'viewers', viewers }),
 });
+
+// A sign-in or sign-out changes what the count can say: ask again now instead
+// of leaving the old answer up until the next tick. Nobody watching, nobody to
+// tell — the first page to connect asks anyway.
+function viewersStale() {
+  if (clients.size > 0) viewerCounts.refreshNow().catch(() => {});
+}
 
 // ---------- test messages (style the overlay without being live) ----------
 // English, and each one says it's a test — so one that lands on stream explains itself.
