@@ -532,3 +532,21 @@ test('viewers: rate limit holds off, a dead token says signed out, errors are er
   clock.t += 14400 * 1000;
   assert.equal((await sender.viewers(['examplechannel'])).state, 'signed_out');
 });
+
+test('auth change is announced: sign-in landing, sign-out, client ID change — and a listener that throws breaks nothing', async t => {
+  const { up } = await fakeTwitch(t, { pendingPolls: 2 });
+  let n = 0;
+  const { sender } = makeSender(t, up, { onAuthChange: () => { n++; throw new Error('listener bug'); } });
+  await sender.setup({ action: 'signin', body: {} });
+  assert.equal(n, 0);                                  // a code on screen isn't a sign-in
+  await waitFor(() => sender.status().signedIn);
+  assert.equal(n, 1);
+  assert.equal(sender.status().as, 'Example_User');    // the throwing listener didn't undo it
+  assert.equal((await sender.setup({ action: 'signout', body: {} })).status, 200);
+  assert.equal(n, 2);
+  assert.equal(sender.status().signedIn, false);
+  await sender.setup({ action: 'client', body: { clientId: CLIENT_ID } });
+  assert.equal(n, 2);                                  // same client: nothing changed
+  await sender.setup({ action: 'client', body: { clientId: 'otherfakeclientid0123456789abcd' } });
+  assert.equal(n, 3);
+});

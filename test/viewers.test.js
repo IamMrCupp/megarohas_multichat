@@ -155,3 +155,32 @@ test('poller: the timer only polls while a page is connected', async () => {
   await new Promise(r => setTimeout(r, 30));
   assert.equal(polls, after);
 });
+
+test('poller: after a sign-in it asks again, even if a poll was already on the wire', async () => {
+  // The poll in flight asked before the sign-in and will say "signed out".
+  // refreshNow must not hand that stale answer back as the fresh one.
+  let signedIn = false;
+  let release;
+  const held = new Promise(r => { release = r; });
+  let first = true;
+  const w = world({
+    twitch: async () => {
+      const answer = signedIn ? { state: 'ok', live: { examplechannel: 42 } } : { state: 'signed_out', note: 'Sign in to Twitch on /setup to show viewers.' };
+      if (first) { first = false; await held; }
+      return answer;
+    },
+  });
+  w.sources.push(tw('examplechannel'));
+  const inFlight = w.vc.refresh();
+  await new Promise(r => setImmediate(r));
+  signedIn = true;
+  const after = w.vc.refreshNow();
+  release();
+  assert.equal((await inFlight).twitch.state, 'unknown');
+  assert.deepEqual((await after).twitch, { state: 'live', count: 42, note: '' });
+  assert.equal(w.calls.twitch.length, 2);
+  assert.deepEqual(w.changes.map(c => c.twitch.state), ['unknown', 'live']);
+  // with nothing in flight it's just a poll
+  await w.vc.refreshNow();
+  assert.equal(w.calls.twitch.length, 3);
+});
