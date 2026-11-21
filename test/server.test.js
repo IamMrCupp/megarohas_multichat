@@ -95,6 +95,20 @@ test('server: the panel\'s controls are gated like sending, so nobody else can c
   assert.equal((await request(s.port, { path: '/overlay', headers: { host: 'some-lan-name:' + s.port } })).status, 200);
 });
 
+test('server: the test button sends English samples that say they are a test', async t => {
+  const s = await startServer(t);
+  const token = (await request(s.port, { path: '/api/dock/session' })).json.token;
+  const r = await request(s.port, { method: 'POST', path: '/api/test', headers: { origin: s.origin, 'x-dock-token': token } });
+  assert.equal(r.status, 200);
+  const { history } = await firstEvent(s.port);
+  assert.deepEqual(history.map(m => `${m.platform}/${m.kind}`), ['twitch/chat', 'youtube/chat', 'twitch/chat', 'youtube/super', 'twitch/system']);
+  for (const m of history) {
+    const shown = [m.author.name, m.amount || '', m.system || '', ...m.parts.map(p => p.v || p.alt || '')].join(' ');
+    assert.doesNotMatch(shown, /[\u0400-\u04FF]/, shown);            // readable on an English-language stream
+    assert.match(m.system || m.parts.map(p => p.v || '').join(''), /\btest\b/i, shown);   // and it says what it is
+  }
+});
+
 test('server: dock-logic.js is served, and a null body is a 400', async t => {
   const s = await startServer(t);
   const js = await request(s.port, { path: '/dock-logic.js' });
