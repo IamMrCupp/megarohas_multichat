@@ -148,6 +148,7 @@ Append them to the overlay URL, joined with `&`, for example
 |---|---|
 | `size=22` | font size, px |
 | `font=Name` | font: a system font by name, or a file from the `fonts` folder |
+| `bg=88` | how solid the message background is, 0–100. Default 62; higher is darker |
 | `dir=top` | chat grows top-down (default is bottom-up) |
 | `platform=0` | hide the platform icons (Twitch/YouTube) on messages |
 | `badges=0` | hide role badges (moderator, VIP, sub, member, etc.) |

@@ -15,7 +15,8 @@
   --line-gap: 6px;          /* расстояние между сообщениями */
   --pad: 7px 12px;          /* внутренние отступы плашки */
   --radius: 10px;           /* скругление плашки */
-  --bg: rgba(10, 10, 14, 0.62);   /* фон обычного сообщения */
+  --bg-opacity: 0.62;       /* how solid the message background is, 0–1 (?bg=N overrides, N in percent) */
+  --bg: rgba(10, 10, 14, var(--bg-opacity));   /* фон обычного сообщения */
   --text: #ffffff;
   --name-weight: 700;
   --emote-size: 1.55em;     /* высота смайлов/эмоутов */
