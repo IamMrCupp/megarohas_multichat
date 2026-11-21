@@ -287,6 +287,7 @@ const viewerCounts = createViewerCounts({
 });
 
 // ---------- test messages (style the overlay without being live) ----------
+// English, and each one says it's a test — so one that lands on stream explains itself.
 let testN = 0;
 function testMessages() {
   const t = () => Date.now();
@@ -295,20 +296,20 @@ function testMessages() {
   return [
     { ...base, id: id(), platform: 'twitch', channel: 'test', kind: 'chat',
       author: { name: 'ExampleViewer', color: '#ff69b4', roles: ['sub'], key: 'exampleviewer' },
-      parts: [{ t: 'text', v: 'привет с твича! ' }, { t: 'emote', url: 'https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/2.0', alt: 'Kappa' }] },
+      parts: [{ t: 'text', v: 'Test message from Twitch ' }, { t: 'emote', url: 'https://static-cdn.jtvnw.net/emoticons/v2/25/default/dark/2.0', alt: 'Kappa' }] },
     { ...base, id: id(), platform: 'youtube', channel: 'test', kind: 'chat',
-      author: { name: 'Юрий Тубов', color: null, roles: ['member'], key: 'UCtest' },
-      parts: [{ t: 'text', v: 'а я с ютуба, у нас тут задержка 😀' }] },
+      author: { name: 'Example Member', color: null, roles: ['member'], key: 'UCtest' },
+      parts: [{ t: 'text', v: 'Test message from YouTube 😀' }] },
     { ...base, id: id(), platform: 'twitch', channel: 'test', kind: 'chat',
-      author: { name: 'Moder2000', color: '#57aeff', roles: ['mod'], key: 'moder2000' },
-      parts: [{ t: 'text', v: 'порядок в чате обеспечен' }] },
+      author: { name: 'ExampleMod', color: '#57aeff', roles: ['mod'], key: 'examplemod' },
+      parts: [{ t: 'text', v: 'Test message from a moderator' }] },
     { ...base, id: id(), platform: 'youtube', channel: 'test', kind: 'super',
-      author: { name: 'Щедрый Зритель', color: null, roles: [], key: 'UCrich' },
-      amount: '₽500', colors: { header: '#ffb300', body: '#ffca28' },
-      parts: [{ t: 'text', v: 'держи на новый микрофон!' }] },
+      author: { name: 'Example Supporter', color: null, roles: [], key: 'UCrich' },
+      amount: '$5.00', colors: { header: '#ffb300', body: '#ffca28' },
+      parts: [{ t: 'text', v: 'Test Super Chat — no money moved' }] },
     { ...base, id: id(), platform: 'twitch', channel: 'test', kind: 'system',
-      author: { name: 'NewSub', roles: [], key: 'newsub' },
-      parts: [], system: 'NewSub подписался с Prime! Уже 3 месяца подряд!' },
+      author: { name: 'ExampleSub', roles: [], key: 'examplesub' },
+      parts: [], system: 'Test: ExampleSub subscribed with Prime. 3 months in a row.' },
   ];
 }
 
