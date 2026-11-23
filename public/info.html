@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>multichat — stream info</title>
+<style>
+  :root {
+    --bg: #161310; --card: #1e1a15; --field: #131009; --line: #322a1e;
+    --ink: #f0e8da; --mut: #a5977f; --acc: #ffb454; --err: #ff7a66; --ok: #8fd460;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  [hidden] { display: none !important; }
+  body { background: var(--bg); color: var(--ink); font: 14px/1.4 "Segoe UI", system-ui, sans-serif; padding: 8px; }
+  a { color: var(--acc); }
+  label.f { display: block; font-size: 12px; color: var(--mut); margin: 9px 0 3px; }
+  input[type=text], select, textarea {
+    width: 100%; background: var(--field); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit;
+  }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--acc); }
+  button {
+    background: #262019; color: var(--ink); border: 1px solid var(--line); border-radius: 8px;
+    padding: 5px 10px; font: inherit; font-size: 12.5px; cursor: pointer;
+  }
+  button.main { background: var(--acc); color: #241a09; border: 0; font-weight: 700; padding: 7px 14px; font-size: 14px; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row > .grow { flex: 1; min-width: 0; }
+  .count { font-size: 11.5px; color: var(--mut); font-variant-numeric: tabular-nums; float: right; }
+  .count.over { color: var(--err); font-weight: 700; }
+  #platforms .p { display: flex; gap: 7px; align-items: baseline; padding: 3px 0; font-size: 13px; }
+  #platforms .p .why { color: var(--mut); font-size: 12px; }
+  #platforms .p.off .name { color: var(--mut); }
+  #grant { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-size: 13px; }
+  #grant .code { font-size: 22px; font-weight: 700; letter-spacing: 2px; color: var(--acc); margin: 4px 0; }
+  #now { font-size: 12px; color: var(--mut); margin-top: 8px; overflow-wrap: anywhere; }
+  #now div { padding: 1px 0; }
+  #now .bad { color: var(--err); }
+  #found { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  #found button { font-size: 12px; padding: 2px 8px; }
+  #picked { font-size: 12.5px; margin-top: 4px; }
+  #picked button { padding: 0 6px; margin-left: 4px; }
+  #state { min-height: 18px; margin-top: 8px; font-size: 12.5px; color: var(--mut); overflow-wrap: anywhere; }
+  #state .ok { color: var(--ok); }
+  #state .bad { color: var(--err); }
+  #state div { padding: 1px 0; }
+  #why { min-height: 0; margin-top: 8px; font-size: 12.5px; color: var(--err); overflow-wrap: anywhere; }
+  .hint { font-size: 11.5px; color: var(--mut); margin-top: 3px; }
+  #actions { margin-top: 12px; }
+</style>
+</head>
+<body>
+<div id="platforms"></div>
+<div id="grant" hidden></div>
+<div id="now"></div>
+
+<form id="form" autocomplete="off">
+  <label class="f" for="preset">Preset</label>
+  <div class="row">
+    <select id="preset" class="grow"><option value="">—</option></select>
+    <button type="button" id="savePreset" title="Keep the form as a named preset">Keep…</button>
+    <button type="button" id="dropPreset" title="Delete the selected preset">Delete</button>
+  </div>
+  <div class="row" id="keepRow" hidden style="margin-top:6px">
+    <input type="text" id="presetName" class="grow" maxlength="40" placeholder="Name for this preset">
+    <button type="button" id="keepOk">Keep</button>
+    <button type="button" id="keepCancel">Cancel</button>
+  </div>
+
+  <label class="f" for="title">Title <span id="titleCount" class="count"></span></label>
+  <input type="text" id="title" spellcheck="true">
+
+  <div id="twCat">
+    <label class="f" for="catSearch">Twitch category</label>
+    <input type="text" id="catSearch" placeholder="Search categories…">
+    <div id="found"></div>
+    <div id="picked"></div>
+  </div>
+
+  <div id="ytCat">
+    <label class="f" for="ytCategory">YouTube category</label>
+    <select id="ytCategory"><option value="">leave as it is</option></select>
+  </div>
+  <div id="ytWhich" hidden>
+    <label class="f" for="ytBroadcast">YouTube broadcast</label>
+    <select id="ytBroadcast"></select>
+  </div>
+
+  <label class="f" for="tags">Tags, separated by commas <span id="tagCount" class="count"></span></label>
+  <textarea id="tags" rows="2" spellcheck="false"></textarea>
+  <div class="hint" id="cost"></div>
+
+  <div class="row" id="actions">
+    <button class="main" id="save">Save</button>
+    <button type="button" id="reload" title="Ask the platforms what they have now">Reload</button>
+  </div>
+  <div id="why"></div>
+  <div id="state"></div>
+</form>
+
+<script src="/info-logic.js"></script>
+<script>
+'use strict';
+const L = window.InfoLogic;
+const $ = id => document.getElementById(id);
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+let token = null;
+let platforms = null;       // from /api/info/state
+let presets = [];
+let localOnly = false;
+let busy = false;
+const current = {};         // per platform: the last answer from /api/info/current
+const ticked = { twitch: true, youtube: true };
+const category = { twitch: undefined, youtube: undefined };   // undefined: untouched; null: cleared (Twitch)
+let granting = null;        // timer while a Twitch permission sign-in is pending
+try { Object.assign(ticked, JSON.parse(localStorage.getItem('info.ticked') || '{}')); } catch (e) {}
+
+function say(parts) {
+  $('state').textContent = '';
+  for (const p of parts) $('state').appendChild(el('div', p.cls || '', p.text));
+}
+
+function api(path, body) {
+  return fetch(path, {
+    method: body ? 'POST' : 'GET', cache: 'no-store',
+    headers: { 'x-dock-token': token || '', ...(body ? { 'content-type': 'application/json' } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}
+
+function form() {
+  return { title: $('title').value, tags: L.parseTags($('tags').value), category };
+}
+
+// ---------- what's on the page ----------
+function renderPlatforms() {
+  const box = $('platforms');
+  box.textContent = '';
+  if (!platforms) return;
+  for (const p of L.NAMES) {
+    const s = platforms[p];
+    const row = el('label', 'p' + (s.ready ? '' : ' off'));
+    const cb = el('input');
+    cb.type = 'checkbox'; cb.checked = s.ready && ticked[p]; cb.disabled = !s.ready;
+    cb.onchange = () => { ticked[p] = cb.checked; try { localStorage.setItem('info.ticked', JSON.stringify(ticked)); } catch (e) {} render(); };
+    row.appendChild(cb);
+    row.appendChild(el('span', 'name', L.LABEL[p]));
+    row.appendChild(el('span', 'why', s.ready ? (s.as ? 'as ' + s.as : '') : s.detail));
+    if (!s.ready && s.needsPermission) {
+      const b = el('button', '', 'Grant');
+      b.type = 'button'; b.onclick = e => { e.preventDefault(); grant(); };
+      row.appendChild(b);
+    } else if (!s.ready && s.available) {
+      const a = el('a', '', 'Setup'); a.href = '/setup'; a.target = '_blank'; a.rel = 'noopener';
+      row.appendChild(a);
+    }
+    box.appendChild(row);
+  }
+}
+
+function renderNow() {
+  const box = $('now');
+  box.textContent = '';
+  for (const p of L.NAMES) {
+    if (!L.ready(platforms, p)) continue;
+    const c = current[p];
+    box.appendChild(el('div', c && !c.ok ? 'bad' : '', 'Now on ' + L.nowLine(p, c)));
+  }
+}
+
+function renderPicked() {
+  const box = $('picked');
+  box.textContent = '';
+  const c = category.twitch;
+  if (c === undefined) { box.textContent = 'Category: leave as it is'; return; }
+  if (c === null) { box.textContent = 'Category: none'; return; }
+  box.appendChild(document.createTextNode('Category: ' + (c.name || c.id)));
+  const x = el('button', '', '×');
+  x.type = 'button'; x.title = 'No category'; x.onclick = () => { category.twitch = null; render(); };
+  box.appendChild(x);
+}
+
+function render() {
+  renderPlatforms();
+  renderNow();
+  renderPicked();
+  const names = L.wanted(platforms, ticked);
+  const f = form();
+  $('twCat').hidden = !names.includes('twitch');
+  $('ytCat').hidden = !names.includes('youtube');
+  const yc = current.youtube && current.youtube.ok ? current.youtube.info.choices : [];
+  $('ytWhich').hidden = !names.includes('youtube') || yc.length < 2;
+
+  const { limit } = platforms ? L.titleLimit(platforms, names) : { limit: 0 };
+  const n = L.count(f.title.trim());
+  $('titleCount').textContent = limit ? `${n} / ${limit}` : '';
+  $('titleCount').classList.toggle('over', !!limit && n > limit);
+  $('tagCount').textContent = f.tags.length ? `${f.tags.length} tag${f.tags.length === 1 ? '' : 's'}` : '';
+
+  const q = platforms && platforms.youtube.quota;
+  $('cost').textContent = names.includes('youtube') && q
+    ? `YouTube quota: ${q.saveTitle} units a save, ${q.saveTags} when the tags change (of ${q.dailyDefault} a day).`
+    : '';
+
+  const why = platforms ? L.problem(platforms, names, f) : 'No connection to the server.';
+  $('save').disabled = busy || !!why;
+  // Why Save is off goes in the page, not in a tooltip.
+  $('why').textContent = busy ? '' : why;
+  $('dropPreset').disabled = !$('preset').value;
+}
+
+function renderPresets(keep) {
+  const sel = $('preset');
+  const was = keep === undefined ? sel.value : keep;
+  sel.textContent = '';
+  sel.appendChild(new Option('—', ''));
+  for (const p of presets) sel.appendChild(new Option(p.name, p.name));
+  sel.value = presets.some(p => p.name === was) ? was : '';
+}
+
+function fill(info) {
+  $('title').value = info.title || '';
+  $('tags').value = (info.tags || []).join(', ');
+}
+
+// ---------- talking to the server ----------
+async function loadState() {
+  try {
+    const s = await fetch('/api/dock/session', { cache: 'no-store' });
+    if (s.status === 403) {
+      const j = await s.json().catch(() => ({}));
+      localOnly = true; platforms = null; token = null;
+      say([{ cls: 'bad', text: j.code === 'not_loopback' || j.code === 'bad_host' || j.code === 'proxied'
+        ? 'Stream info only works from the machine the server runs on.' : (j.error || 'Refused.') }]);
+      return false;
+    }
+    token = (await s.json()).token;
+    const r = await api('/api/info/state');
+    const j = await r.json();
+    platforms = j.platforms; presets = j.presets || [];
+    renderPresets();
+    if (j.notices && j.notices.length) say(j.notices.map(text => ({ cls: 'bad', text })));
+    return true;
+  } catch (e) {
+    platforms = null;
+    say([{ cls: 'bad', text: 'No connection to the server.' }]);
+    return false;
+  } finally { render(); }
+}
+
+async function loadCurrent(p, want) {
+  if (!L.ready(platforms, p)) { delete current[p]; return; }
+  try {
+    const r = await api('/api/info/current?platform=' + p + (want ? '&want=' + encodeURIComponent(want) : ''));
+    current[p] = await r.json();
+  } catch (e) { current[p] = { ok: false, reason: 'no connection to the server' }; }
+  if (p === 'youtube' && current.youtube.ok) {
+    const sel = $('ytBroadcast');
+    sel.textContent = '';
+    for (const c of current.youtube.info.choices || []) sel.appendChild(new Option(c.label, c.id));
+    sel.value = current.youtube.info.key;
+  }
+}
+
+async function loadYouTubeCategories() {
+  if (!L.ready(platforms, 'youtube') || $('ytCategory').options.length > 1) return;
+  try {
+    const j = await (await api('/api/info/categories?platform=youtube')).json();
+    if (!j.ok) return;
+    for (const c of j.categories) $('ytCategory').appendChild(new Option(c.name, c.id));
+  } catch (e) {}
+}
+
+// YouTube hands back a category ID; the menu knows its name.
+function nameYouTubeCategory() {
+  const c = current.youtube && current.youtube.ok && current.youtube.info.category;
+  if (!c) return;
+  const o = [...$('ytCategory').options].find(x => x.value === c.id);
+  if (o) c.name = o.textContent;
+}
+
+// Ask the platforms what they have. first: also put it in an empty form.
+// only: just that platform — asking YouTube costs quota, so nobody asks it
+// because something changed on the Twitch side.
+async function reload(first, only) {
+  if (!(await loadState())) return;
+  await Promise.all(L.NAMES.filter(p => !only || p === only).map(p => loadCurrent(p)));
+  await loadYouTubeCategories();
+  nameYouTubeCategory();
+  // The menu starts on what the broadcast has, unless one was already picked.
+  const yc = current.youtube && current.youtube.ok && current.youtube.info.category;
+  if (yc && yc.name && !category.youtube) { category.youtube = { id: yc.id, name: yc.name }; $('ytCategory').value = yc.id; }
+  // Same for Twitch's category, where "none" is a real answer.
+  if (category.twitch === undefined && current.twitch && current.twitch.ok) {
+    const tc = current.twitch.info.category;
+    category.twitch = tc ? { id: tc.id, name: tc.name } : null;
+  }
+  if (first && !$('title').value) {
+    const from = L.NAMES.find(p => current[p] && current[p].ok);
+    if (from) fill(current[from].info);
+  }
+  render();
+}
+
+// ---------- Twitch: the one extra permission ----------
+async function grant() {
+  const box = $('grant');
+  box.hidden = false;
+  box.textContent = 'Asking Twitch…';
+  try {
+    const r = await api('/api/setup/twitch/signin', { info: true });
+    const j = await r.json();
+    if (!r.ok) { box.textContent = j.error || 'Twitch wouldn\'t start the sign-in.'; return; }
+    box.textContent = '';
+    box.appendChild(el('div', '', 'Changing stream info needs one more Twitch permission. In a browser where you\'re logged in to Twitch, open:'));
+    if (/^https:\/\/(www\.)?twitch\.tv\//.test(j.verificationUri)) {
+      const a = el('a', '', j.verificationUri); a.href = j.verificationUri; a.target = '_blank'; a.rel = 'noopener';
+      box.appendChild(a);
+    }
+    box.appendChild(el('div', 'code', j.userCode));
+    box.appendChild(el('div', 'hint', 'Waiting for you to approve it there…'));
+    clearInterval(granting);
+    granting = setInterval(async () => {
+      try {
+        const s = (await (await api('/api/setup/state')).json()).platforms.twitch;
+        if (s.hasInfoScope) { clearInterval(granting); box.hidden = true; say([{ cls: 'ok', text: 'Twitch: permission granted.' }]); reload(true, 'twitch'); }
+        else if (!s.pending) { clearInterval(granting); box.textContent = s.pendingError || 'The sign-in ended without the permission. Try again.'; loadState(); }
+      } catch (e) {}
+    }, 2000);
+  } catch (e) { box.textContent = 'No connection to the server.'; }
+}
+
+// ---------- Twitch category search ----------
+let searchTimer = null;
+$('catSearch').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  const q = $('catSearch').value.trim();
+  if (!q) { $('found').textContent = ''; return; }
+  searchTimer = setTimeout(async () => {
+    try {
+      const j = await (await api('/api/info/categories?platform=twitch&q=' + encodeURIComponent(q))).json();
+      if ($('catSearch').value.trim() !== q) return;
+      $('found').textContent = '';
+      if (!j.ok) { $('found').appendChild(el('span', 'hint', j.reason)); return; }
+      if (!j.categories.length) { $('found').appendChild(el('span', 'hint', 'Nothing by that name.')); return; }
+      for (const c of j.categories) {
+        const b = el('button', '', c.name);
+        b.type = 'button';
+        b.onclick = () => { category.twitch = c; $('catSearch').value = ''; $('found').textContent = ''; render(); };
+        $('found').appendChild(b);
+      }
+    } catch (e) {}
+  }, 350);
+});
+
+$('ytCategory').onchange = () => {
+  const o = $('ytCategory').selectedOptions[0];
+  category.youtube = o && o.value ? { id: o.value, name: o.textContent } : undefined;
+  render();
+};
+$('ytBroadcast').onchange = async () => { await loadCurrent('youtube', $('ytBroadcast').value); nameYouTubeCategory(); render(); };
+
+// ---------- presets ----------
+$('preset').onchange = () => {
+  disarmDrop();
+  const p = presets.find(x => x.name === $('preset').value);
+  if (p) {
+    $('title').value = p.title;
+    $('tags').value = p.tags.join(', ');
+    category.twitch = p.category.twitch || undefined;
+    category.youtube = p.category.youtube || undefined;
+    $('ytCategory').value = p.category.youtube ? p.category.youtube.id : '';
+  }
+  render();
+};
+// No prompt() or confirm(): a browser dock isn't guaranteed to show script dialogs.
+$('savePreset').onclick = () => {
+  $('keepRow').hidden = false;
+  $('presetName').value = $('preset').value;
+  $('presetName').focus();
+};
+$('keepCancel').onclick = () => { $('keepRow').hidden = true; };
+$('presetName').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); $('keepOk').click(); }
+  if (e.key === 'Escape') $('keepRow').hidden = true;
+});
+$('keepOk').onclick = async () => {
+  const name = $('presetName').value.trim();
+  if (!name) return;
+  const f = form();
+  const cat = {};
+  for (const p of L.NAMES) if (category[p] && category[p].id) cat[p] = category[p];
+  try {
+    const r = await api('/api/info/presets', { name, title: f.title.trim(), tags: f.tags, category: cat });
+    const j = await r.json();
+    if (!r.ok) { say([{ cls: 'bad', text: j.error || 'Preset not kept.' }]); return; }
+    presets = j.presets; renderPresets(name); $('keepRow').hidden = true;
+    say([{ cls: 'ok', text: 'Preset kept. Nothing was sent to Twitch or YouTube.' }]);
+  } catch (e) { say([{ cls: 'bad', text: 'No connection to the server.' }]); }
+  render();
+};
+let dropArmed = null;
+function disarmDrop() { clearTimeout(dropArmed); dropArmed = null; $('dropPreset').textContent = 'Delete'; }
+$('dropPreset').onclick = async () => {
+  const name = $('preset').value;
+  if (!name) return;
+  // First click asks, second click does it.
+  if (!dropArmed) { $('dropPreset').textContent = 'Sure?'; dropArmed = setTimeout(disarmDrop, 4000); return; }
+  disarmDrop();
+  try {
+    const j = await (await api('/api/info/presets/delete', { name })).json();
+    presets = j.presets || []; renderPresets('');
+  } catch (e) { say([{ cls: 'bad', text: 'No connection to the server.' }]); }
+  render();
+};
+
+// ---------- save ----------
+$('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (busy || !platforms) return;
+  const names = L.wanted(platforms, ticked);
+  const f = form();
+  const why = L.problem(platforms, names, f);
+  if (why) { say([{ cls: 'bad', text: why + ' Nothing was saved.' }]); return; }
+  busy = true; render();
+  say([{ text: 'Saving…' }]);
+  let parts;
+  let saved = null;
+  try {
+    let r = await api('/api/info/save', L.payload(names, f, current));
+    if (r.status === 403) { await loadState(); if (token) r = await api('/api/info/save', L.payload(names, f, current)); }
+    const j = await r.json().catch(() => ({}));
+    saved = j.results || null;
+    parts = (!r.ok || !j.results)
+      ? [{ cls: 'bad', text: 'Not saved — ' + (j.error || 'HTTP ' + r.status) }]
+      : Object.keys(j.results).map(p => { const line = L.resultLine(p, j.results[p]); return { cls: line.ok ? 'ok' : 'bad', text: line.text }; });
+  } catch (err) { parts = [{ cls: 'bad', text: 'Not saved — no connection to the server.' }]; }
+  busy = false;
+  await loadState();
+  // Twitch is free to ask again. YouTube isn't: after a save that worked the
+  // page already knows what's there, so it writes that down instead.
+  if (names.includes('twitch')) await loadCurrent('twitch');
+  if (saved && saved.youtube && saved.youtube.ok && current.youtube && current.youtube.ok) {
+    const i = current.youtube.info;
+    i.title = f.title.trim();
+    if (category.youtube) i.category = category.youtube;
+    if (i.tagsKnown) i.tags = f.tags;
+  }
+  say(parts);
+  render();
+});
+
+$('reload').onclick = () => { say([]); reload(false); };
+$('title').addEventListener('input', render);
+$('tags').addEventListener('input', render);
+reload(true);
+</script>
+</body>
+</html>

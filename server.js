@@ -11,6 +11,7 @@ const VERSION = require('./package.json').version;
 const { TwitchSource, channelFromUrl } = require('./lib/twitch');
 const { YouTubeSource } = require('./lib/youtube');
 const { createSendApi } = require('./lib/sendapi');
+const { createInfoApi, cleanPresets } = require('./lib/infoapi');
 const { SecretStore, acquireSendLock } = require('./lib/tokens');
 const { TwitchSender } = require('./lib/twitch-send');
 const { YouTubeSender } = require('./lib/youtube-send');
@@ -73,6 +74,9 @@ function saveConfig() {
   if (config.twitchClientId) out.twitchClientId = config.twitchClientId;
   // opt-ins to an official API where a free path is the default
   if (config.youtubeViewers === 'api') out.youtubeViewers = 'api';
+  // stream info presets: titles, category names and IDs, tags — no secrets
+  const presets = cleanPresets(config.infoPresets);
+  if (presets.length) out.infoPresets = presets;
   const replyTo = replyTargets.toConfig();
   if (Object.keys(replyTo).length) out.replyTo = replyTo;
   try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(out, null, 2)); } catch (e) {
@@ -263,6 +267,17 @@ const sendApi = createSendApi({
   log: logErr,
 });
 
+// ---------- stream info (title, category, tags) ----------
+// Same sign-ins, same gate, same one-copy rule as sending.
+const infoApi = createInfoApi({
+  api: sendApi,
+  senders: { twitch: twitchSender, youtube: youtubeSender },
+  disabled: () => (sendLock.held ? '' : sendLock.reason),
+  getPresets: () => config.infoPresets,
+  setPresets: list => { config.infoPresets = list; saveConfig(); },
+  log: logErr,
+});
+
 // ---------- viewer counts (the overlay's bar) ----------
 // Twitch through the official API with the dock's sign-in; YouTube through
 // the watch page's own interface, so no API quota is spent. Only polled while
@@ -377,10 +392,13 @@ const server = http.createServer(async (req, res) => {
   const p = u.pathname;
   try {
     if (await sendApi.handle(req, res, u)) return;
+    if (await infoApi.handle(req, res, u)) return;
     if (req.method === 'GET') {
       if (p === '/') return serveFile(res, 'panel.html');
       if (p === '/dock') return serveFile(res, 'dock.html');
       if (p === '/setup') return serveFile(res, 'setup.html');
+      if (p === '/info') return serveFile(res, 'info.html');
+      if (p === '/info-logic.js') return serveFile(res, 'info-logic.js');
       if (p === '/dock-logic.js') return serveFile(res, 'dock-logic.js');
       if (p === '/viewer-bar.js') return serveFile(res, 'viewer-bar.js');
       if (p === '/overlay-options.js') return serveFile(res, 'overlay-options.js');
@@ -485,6 +503,7 @@ function printBanner() {
   console.log(`  Панель управления: http://127.0.0.1:${actualPort}/`);
   console.log(`  Оверлей для OBS:   http://127.0.0.1:${actualPort}/overlay`);
   console.log(`  Reply dock:        http://127.0.0.1:${actualPort}/dock`);
+  console.log(`  Stream info:       http://127.0.0.1:${actualPort}/info`);
   if (!sendLock.held) console.log('  ' + sendLock.reason);
   for (const o of lanOrigins()) {
     console.log(`  По локальной сети: ${o}/  (панель)  ·  ${o}/overlay`);
