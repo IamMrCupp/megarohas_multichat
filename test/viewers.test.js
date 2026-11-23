@@ -184,3 +184,42 @@ test('poller: after a sign-in it asks again, even if a poll was already on the w
   await w.vc.refreshNow();
   assert.equal(w.calls.twitch.length, 3);
 });
+
+// As returned on 2026-11-23 for a broadcast that was scheduled and not yet
+// started, with one browser on its page. Trimmed.
+const waitingMeta = (n, { text, date = 'Scheduled for Nov 22, 2026' } = {}) => ({
+  actions: [
+    { updateViewershipAction: { viewCount: { videoViewCountRenderer: {
+      viewCount: { simpleText: text || `${n} waiting` }, isLive: true,
+      extraShortViewCount: { simpleText: String(n) }, unlabeledViewCountValue: { simpleText: String(n) }, originalViewCount: String(n),
+    } } } },
+    { updateDateTextAction: { dateText: { simpleText: date } } },
+    { updateTitleAction: {} },
+  ],
+});
+
+test('parse: people waiting for a broadcast to start are not people watching it', () => {
+  assert.deepEqual(parseYouTubeViewers(waitingMeta(1)), { live: false, count: null });
+  assert.deepEqual(parseYouTubeViewers(waitingMeta(250)), { live: false, count: null });
+  // either sign is enough on its own
+  assert.deepEqual(parseYouTubeViewers(waitingMeta(1, { date: '' })), { live: false, count: null });
+  assert.deepEqual(parseYouTubeViewers(waitingMeta(1, { text: '1 watching now' })), { live: false, count: null });
+  assert.deepEqual(parseYouTubeViewers(waitingMeta(1, { text: 'Waiting', date: '' })), { live: false, count: null });
+  // once it has started, the same shape counts again
+  assert.deepEqual(parseYouTubeViewers(waitingMeta(7, { text: '7 watching now', date: 'Started streaming 4 minutes ago' })), { live: true, count: 7 });
+  // wording this doesn't recognise is counted, as it was before
+  assert.deepEqual(parseYouTubeViewers(waitingMeta(7, { text: '7 Zuschauer', date: 'Livestream vom 22.11.2026' })), { live: true, count: 7 });
+  // a title with the word in it is not a sign of anything
+  const live = liveMeta(12);
+  live.actions.push({ updateTitleAction: { title: { simpleText: 'Scheduled maintenance, waiting on parts' } } });
+  assert.deepEqual(parseYouTubeViewers(live), { live: true, count: 12 });
+});
+
+test('the bar shows no YouTube number while the broadcast is only scheduled', async () => {
+  const source = { platform: 'youtube', adapter: { videoId: 'FAKEvideo01' } };
+  let answer = parseYouTubeViewers(waitingMeta(1));
+  const counts = createViewerCounts({ listSources: () => [source], twitch: async () => ({ state: 'ok', live: {} }), youtube: async () => answer });
+  assert.deepEqual((await counts.refresh()).youtube, { state: 'offline', count: null, note: '' });
+  answer = parseYouTubeViewers(liveMeta(3));
+  assert.deepEqual((await counts.refresh()).youtube, { state: 'live', count: 3, note: '' });
+});
