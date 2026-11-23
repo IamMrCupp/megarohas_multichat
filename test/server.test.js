@@ -248,3 +248,40 @@ test('server: viewer counts ride the event stream; the bar\'s files are served; 
   await request(s.port, { method: 'POST', path: '/api/setup/youtube/viewers', body: { source: 'free' }, headers });
   assert.equal(cfg().youtubeViewers, undefined);
 });
+
+test('server: the stream info page is served, its API is gated, and presets land in config.json — nothing else does', async t => {
+  const fs = require('fs');
+  const path = require('path');
+  const s = await startServer(t, { infoPresets: [{ name: 'From before', title: 'Kept across a restart', tags: ['a'] }, { junk: true }] });
+  const page = await request(s.port, { path: '/info' });
+  assert.equal(page.status, 200);
+  assert.ok(page.text.includes('id="form"') && page.text.includes('/info-logic.js'));
+  assert.ok((await request(s.port, { path: '/info-logic.js' })).text.includes('InfoLogic'));
+  assert.match(s.output(), /Stream info:\s+http:\/\/127\.0\.0\.1:\d+\/info/);
+
+  // no token: nothing, not even the state
+  assert.equal((await request(s.port, { path: '/api/info/state' })).json.code, 'no_token');
+  assert.equal((await request(s.port, { method: 'POST', path: '/api/info/save', body: { platforms: ['twitch'], title: 'x' }, headers: { origin: s.origin } })).json.code, 'no_token');
+  assert.equal((await request(s.port, { path: '/api/info/state', headers: { host: 'some-lan-name:' + s.port, 'x-dock-token': 'x' } })).json.code, 'bad_host');
+
+  const token = (await request(s.port, { path: '/api/dock/session' })).json.token;
+  const headers = { origin: s.origin, 'x-dock-token': token };
+  const st = await request(s.port, { path: '/api/info/state', headers: { 'x-dock-token': token } });
+  assert.equal(st.status, 200);
+  assert.deepEqual([st.json.platforms.twitch.available, st.json.platforms.twitch.ready], [true, false]);
+  assert.deepEqual([st.json.platforms.youtube.available, st.json.platforms.youtube.ready], [true, false]);
+  assert.match(st.json.platforms.youtube.detail, /off until a Google client is set up/);
+  assert.deepEqual(st.json.presets, [{ name: 'From before', title: 'Kept across a restart', tags: ['a'], category: {} }]);
+
+  // not signed in: an honest per-platform answer, no crash
+  const save = await request(s.port, { method: 'POST', path: '/api/info/save', body: { platforms: ['twitch', 'youtube'], title: 'x', tags: [] }, headers });
+  assert.equal(save.json.results.twitch.code, 'not_signed_in');
+  assert.equal(save.json.results.youtube.code, 'not_signed_in');
+
+  const keep = await request(s.port, { method: 'POST', path: '/api/info/presets', body: { name: 'Repair night', title: 'Fixing an example board', tags: ['repair'], category: { twitch: { id: '509670', name: 'Example Category' } } }, headers });
+  assert.equal(keep.status, 200);
+  const cfg = JSON.parse(fs.readFileSync(path.join(s.dir, 'config.json'), 'utf8'));
+  assert.deepEqual(cfg.infoPresets.map(p => p.name), ['From before', 'Repair night']);
+  assert.deepEqual(cfg.infoPresets[1].category, { twitch: { id: '509670', name: 'Example Category' } });
+  assert.equal(fs.existsSync(path.join(s.dir, 'secrets.json')), false);
+});

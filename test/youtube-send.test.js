@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { SecretStore } = require('../lib/tokens');
-const { YouTubeSender, msUntilPacificMidnight } = require('../lib/youtube-send');
+const { YouTubeSender, msUntilPacificMidnight, tagsLength } = require('../lib/youtube-send');
 const { fakeUpstream, startApp, request, fakeSender } = require('./helpers');
 
 const CLIENT_ID = '000000000000-fakefakefakefake.apps.googleusercontent.com';
@@ -512,4 +512,241 @@ test('auth change is announced: sign-in landing, sign-out, client change — not
   assert.equal(n, 2);                                  // same client, secret kept: nothing changed
   await c.app.post('/api/setup/youtube/client', { clientId: '' });
   assert.equal(n, 3);
+});
+
+// ---------- stream info ----------
+// A fake channel: broadcasts by status, the video behind each one, and a
+// record of every write.
+function withBroadcasts(ctx, { active = [], upcoming = [], videos } = {}) {
+  const { up, state } = ctx;
+  const authed = c => c.headers.authorization === 'Bearer ' + state.access;
+  const world = { active, upcoming, puts: [], refuse: null };
+  const bc = (id, title, extra = {}) => ({
+    id, snippet: { title, description: 'Example description for ' + id, scheduledStartTime: '2026-11-23T18:00:00Z', channelId: 'UCfakefakefakefakefakefa', ...extra },
+  });
+  world.bc = bc;
+  world.videos = videos || (id => ({ id, snippet: { title: 'video title', description: 'Example video description', categoryId: '22', tags: ['old', 'two words'], defaultLanguage: 'en', channelId: 'UCfakefakefakefakefakefa', liveBroadcastContent: 'live' } }));
+  up.routes['GET /youtube/v3/liveBroadcasts'] = c => {
+    if (!authed(c)) return gErr(401, 'authError', 'Invalid Credentials');
+    return [200, { items: world[c.query.broadcastStatus] || [] }];
+  };
+  state.video = c => { const v = world.videos(c.query.id); return [200, { items: v ? [v] : [] }]; };
+  for (const key of ['PUT /youtube/v3/liveBroadcasts', 'PUT /youtube/v3/videos']) {
+    up.routes[key] = c => {
+      if (!authed(c)) return gErr(401, 'authError', 'Invalid Credentials');
+      world.puts.push(c);
+      return world.refuse ? world.refuse(c) : [200, c.body];
+    };
+  }
+  up.routes['GET /youtube/v3/videoCategories'] = c => {
+    if (!authed(c)) return gErr(401, 'authError', 'Invalid Credentials');
+    return [200, { items: [
+      { id: '28', snippet: { title: 'Science & Technology', assignable: true } },
+      { id: '20', snippet: { title: 'Gaming', assignable: true } },
+      { id: '30', snippet: { title: 'Movies', assignable: false } },
+    ] }];
+  };
+  return world;
+}
+
+test('stream info: finds the live broadcast and its tags in two calls', async t => {
+  const ctx = await setup(t);
+  const w = withBroadcasts(ctx);
+  w.active = [w.bc('FAKElive001', 'Live title', { categoryId: '22' })];
+  const before = apiCalls(ctx.up).length;
+  const r = await ctx.sender.getInfo();
+  assert.deepEqual(r.info, {
+    title: 'Live title', category: { id: '22', name: '' }, tags: ['old', 'two words'], tagsKnown: true,
+    where: 'YouTube (live)', key: 'FAKElive001', choices: [{ id: 'FAKElive001', label: 'Live title (live)' }],
+  });
+  const calls = apiCalls(ctx.up).slice(before);
+  assert.deepEqual(calls.map(c => c.key), ['GET /youtube/v3/liveBroadcasts', 'GET /youtube/v3/videos']);
+  assert.deepEqual(calls[0].query, { part: 'id,snippet', broadcastStatus: 'active', broadcastType: 'all', maxResults: '50' });
+  assert.deepEqual(calls[1].query, { part: 'snippet', id: 'FAKElive001' });
+  const st = ctx.sender.infoStatus();
+  assert.deepEqual([st.ready, st.needsPermission, st.limits.title, st.quota.saveTitle, st.quota.saveTags], [true, false, 100, 3, 52]);
+});
+
+test('stream info: nothing live means the soonest upcoming broadcast; nothing at all says so and stops', async t => {
+  const ctx = await setup(t);
+  const w = withBroadcasts(ctx);
+  w.upcoming = [
+    w.bc('FAKElater01', 'Later', { scheduledStartTime: '2026-12-01T18:00:00Z' }),
+    w.bc('FAKEsooner1', 'Sooner', { scheduledStartTime: '2026-11-24T18:00:00Z' }),
+  ];
+  let r = await ctx.sender.getInfo();
+  assert.equal(r.info.key, 'FAKEsooner1');
+  assert.equal(r.info.where, 'YouTube (upcoming)');
+  assert.deepEqual(r.info.choices.map(c => c.id), ['FAKEsooner1', 'FAKElater01']);
+  // the page can ask for the other one
+  assert.equal((await ctx.sender.getInfo('FAKElater01')).info.key, 'FAKElater01');
+
+  w.upcoming = [];
+  const before = apiCalls(ctx.up).length;
+  r = await ctx.sender.getInfo();
+  assert.deepEqual([r.ok, r.code], [false, 'no_broadcast']);
+  assert.match(r.reason, /No live or upcoming broadcast/);
+  assert.deepEqual(apiCalls(ctx.up).slice(before).map(c => c.query.broadcastStatus), ['active', 'upcoming']);
+  assert.equal((await ctx.sender.setInfo({ title: 'x', tags: [], expect: 'FAKEsooner1' })).code, 'no_broadcast');
+  assert.equal(w.puts.length, 0);
+});
+
+test('stream info: title and category go through the broadcast for 1 unit, keeping what the form does not hold', async t => {
+  const ctx = await setup(t);
+  const w = withBroadcasts(ctx);
+  w.active = [w.bc('FAKElive001', 'Live title', { scheduledEndTime: '2026-11-23T22:00:00Z', categoryId: '22' })];
+  const r = await ctx.sender.setInfo({ title: 'Fixing an example board', categoryId: '28', tags: ['old', 'two words'], expect: 'FAKElive001' });
+  assert.deepEqual(r, { ok: true, cost: 1 });
+  assert.equal(w.puts.length, 1);
+  assert.equal(w.puts[0].key, 'PUT /youtube/v3/liveBroadcasts');
+  assert.deepEqual(w.puts[0].query, { part: 'snippet' });
+  assert.deepEqual(w.puts[0].body, {
+    id: 'FAKElive001',
+    snippet: {
+      title: 'Fixing an example board', description: 'Example description for FAKElive001',
+      scheduledStartTime: '2026-11-23T18:00:00Z', scheduledEndTime: '2026-11-23T22:00:00Z', categoryId: '28',
+    },
+  });
+  // no category picked: the one it has is sent back, not dropped
+  await ctx.sender.setInfo({ title: 'Again', tags: ['old', 'two words'], expect: 'FAKElive001' });
+  assert.equal(w.puts[1].body.snippet.categoryId, '22');
+});
+
+test('stream info: changed tags go through the video for 50 units, in one call, keeping its description', async t => {
+  const ctx = await setup(t);
+  const w = withBroadcasts(ctx);
+  w.active = [w.bc('FAKElive001', 'Live title')];
+  const r = await ctx.sender.setInfo({ title: 'Fixing an example board', tags: ['repair', 'soldering'], expect: 'FAKElive001' });
+  assert.deepEqual(r, { ok: true, cost: 50 });
+  assert.equal(w.puts.length, 1);
+  assert.equal(w.puts[0].key, 'PUT /youtube/v3/videos');
+  assert.deepEqual(w.puts[0].query, { part: 'snippet' });
+  assert.deepEqual(w.puts[0].body, {
+    id: 'FAKElive001',
+    snippet: { title: 'Fixing an example board', categoryId: '22', tags: ['repair', 'soldering'], description: 'Example video description', defaultLanguage: 'en' },
+  });
+  // a video with no category yet, and none picked: refused before the 50 units
+  w.videos = id => ({ id, snippet: { title: 't', tags: [] } });
+  const none = await ctx.sender.setInfo({ title: 'x', tags: ['new'], expect: 'FAKElive001' });
+  assert.equal(none.code, 'no_category');
+  assert.equal(w.puts.length, 1);
+});
+
+test('stream info: a save only lands on the broadcast the page was showing', async t => {
+  const ctx = await setup(t);
+  const w = withBroadcasts(ctx);
+  w.active = [w.bc('FAKEnewlive', 'A different stream')];
+  for (const expect of ['FAKEoldlive', undefined, '']) {
+    const r = await ctx.sender.setInfo({ title: 'x', tags: [], expect });
+    assert.equal(r.code, 'target_changed');
+    assert.match(r.reason, /A different stream/);
+  }
+  assert.equal(w.puts.length, 0);
+});
+
+test('stream info: no video under the broadcast\'s ID — title is saved, tags are left alone and it says so', async t => {
+  const ctx = await setup(t);
+  const w = withBroadcasts(ctx, { videos: () => null });
+  w.active = [w.bc('FAKElive001', 'Live title')];
+  const got = await ctx.sender.getInfo();
+  assert.deepEqual([got.info.tags, got.info.tagsKnown], [[], false]);
+  const r = await ctx.sender.setInfo({ title: 'New title', tags: ['repair'], expect: 'FAKElive001' });
+  assert.equal(r.ok, true);
+  assert.match(r.note, /Tags were not/);
+  assert.deepEqual(w.puts.map(c => c.key), ['PUT /youtube/v3/liveBroadcasts']);
+  // a video that answers under some other ID is not this broadcast's
+  w.videos = () => ({ id: 'FAKEother01', snippet: { tags: ['x'] } });
+  assert.equal((await ctx.sender.getInfo()).info.tagsKnown, false);
+});
+
+test('stream info: Google\'s refusals in its words; quota gone stops everything until midnight Pacific', async t => {
+  const ctx = await setup(t);
+  const w = withBroadcasts(ctx);
+  w.active = [w.bc('FAKElive001', 'Live title')];
+  const form = { title: 'x', tags: ['old', 'two words'], expect: 'FAKElive001' };
+  w.refuse = () => gErr(400, 'invalidScheduledStartTime', 'The scheduled start time is invalid.');
+  let r = await ctx.sender.setInfo(form);
+  assert.deepEqual([r.code, r.reason], ['invalidScheduledStartTime', 'The scheduled start time is invalid.']);
+
+  w.refuse = () => gErr(403, 'quotaExceeded', 'The request cannot be completed because you have exceeded your quota.');
+  r = await ctx.sender.setInfo(form);
+  assert.equal(r.code, 'quota_exhausted');
+  assert.ok(r.retryAfter > 0);
+  const before = apiCalls(ctx.up).length;
+  assert.equal((await ctx.sender.getInfo()).code, 'quota_exhausted');
+  assert.equal((await ctx.sender.setInfo(form)).code, 'quota_exhausted');
+  assert.equal((await ctx.sender.categories()).code, 'quota_exhausted');
+  assert.equal(apiCalls(ctx.up).length, before);
+  assert.equal(ctx.sender.infoStatus().quota.exhausted, true);
+  ctx.clock.t += msUntilPacificMidnight(ctx.clock.t) + 1000;
+
+  // a dead sign-in on the read
+  ctx.state.refresh = 'ROTATED_AWAY';
+  ctx.state.access = 'SOMETHING_ELSE';
+  r = await ctx.sender.getInfo();
+  assert.equal(r.code, 'not_signed_in');
+  assert.equal(ctx.sender.status().signedIn, false);
+  assert.equal((await ctx.sender.setInfo(form)).code, 'not_signed_in');
+});
+
+test('stream info: categories are asked for once, and only the assignable ones are offered', async t => {
+  const ctx = await setup(t);
+  withBroadcasts(ctx);
+  const a = await ctx.sender.categories();
+  assert.deepEqual(a.categories, [{ id: '28', name: 'Science & Technology' }, { id: '20', name: 'Gaming' }]);
+  await ctx.sender.categories();
+  const calls = ctx.up.calls.filter(c => c.key === 'GET /youtube/v3/videoCategories');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].query, { part: 'snippet', regionCode: 'US' });
+});
+
+test('stream info: the rules checked before any quota is spent, and the estimate counts what was spent', async t => {
+  const ctx = await setup(t);
+  const { sender } = ctx;
+  const ok = { title: 'x'.repeat(100), tags: ['repair', 'two words'] };
+  assert.equal(sender.checkInfo(ok), '');
+  assert.match(sender.checkInfo({ ...ok, title: '' }), /needs a title/);
+  assert.match(sender.checkInfo({ ...ok, title: 'x'.repeat(101) }), /100/);
+  assert.match(sender.checkInfo({ ...ok, title: 'a <b> c' }), /< or >/);
+  assert.match(sender.checkInfo({ ...ok, tags: ['a,b'] }), /comma/);
+  // the reference's own example: Foo-Baz is 7, "Foo Baz" is 9 with its quotes, plus the comma between
+  assert.equal(tagsLength(['Foo-Baz', 'Foo Baz']), 17);
+  assert.equal(sender.checkInfo({ ...ok, tags: ['x'.repeat(500)] }), '');
+  assert.match(sender.checkInfo({ ...ok, tags: ['x'.repeat(499), 'y'] }), /500/);
+
+  const w = withBroadcasts(ctx);
+  w.active = [w.bc('FAKElive001', 'Live title')];
+  const used = () => sender.setupState({ port: 1 }).quota.usedTodayEstimate;
+  const start = used();
+  await sender.getInfo();
+  assert.equal(used() - start, 2);
+  await sender.setInfo({ title: 'x', tags: ['old', 'two words'], expect: 'FAKElive001' });
+  assert.equal(used() - start, 2 + 3);
+  await sender.setInfo({ title: 'x', tags: ['new'], expect: 'FAKElive001' });
+  assert.equal(used() - start, 2 + 3 + 52);
+});
+
+test('stream info over HTTP: read, pick a category, save to the shown broadcast — no token or secret in any response', async t => {
+  const ctx = await setup(t);
+  const w = withBroadcasts(ctx);
+  w.active = [w.bc('FAKElive001', 'Live title')];
+  const seen = [];
+  const get = async p => { const r = await ctx.app.get(p); seen.push(r.text); return r; };
+  assert.equal((await get('/api/info/state')).json.platforms.youtube.ready, true);
+  const cur = await get('/api/info/current?platform=youtube');
+  assert.equal(cur.json.info.key, 'FAKElive001');
+  assert.equal((await get('/api/info/categories?platform=youtube')).json.categories.length, 2);
+  const r = await ctx.app.post('/api/info/save', {
+    platforms: ['youtube'], title: 'Fixing an example board', tags: ['old', 'two words'],
+    category: { youtube: { id: '28', name: 'Science & Technology' } }, expect: { youtube: cur.json.info.key },
+  });
+  seen.push(r.text);
+  assert.deepEqual(r.json.results, { youtube: { ok: true, cost: 1 } });
+  assert.equal(w.puts[0].body.snippet.categoryId, '28');
+  // a page showing a broadcast that has since been replaced
+  w.active = [w.bc('FAKEnewlive', 'A different stream')];
+  const stale = await ctx.app.post('/api/info/save', { platforms: ['youtube'], title: 'x', tags: [], expect: { youtube: 'FAKElive001' } });
+  assert.equal(stale.json.results.youtube.code, 'target_changed');
+  assert.equal(w.puts.length, 1);
+  for (const text of seen) assert.doesNotMatch(text, /FAKE_YT_ACCESS|FAKE_YT_REFRESH|FAKE_CLIENT_SECRET/);
 });

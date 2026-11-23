@@ -8,6 +8,7 @@ const path = require('path');
 const net = require('net');
 const { spawn } = require('child_process');
 const { createSendApi } = require('../lib/sendapi');
+const { createInfoApi } = require('../lib/infoapi');
 
 function listen(server) {
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
@@ -68,8 +69,9 @@ const TARGETS = {
   youtube: { pinned: true, sourceId: 'bbbb2222', videoId: 'FAKEvideo01', channel: 'Example Channel', label: 'Example Channel · video FAKEvideo01', key: 'bbbb2222:FAKEvideo01', choices: [{ id: 'bbbb2222', label: 'Example Channel' }] },
 };
 
-async function startApp({ senders = {}, targets, remoteAddress, setTarget, ...more } = {}) {
+async function startApp({ senders = {}, targets, remoteAddress, setTarget, presets = [], ...more } = {}) {
   let port = 0;
+  const kept = { presets };       // what server.js keeps in config.json
   const current = () => (typeof targets === 'function' ? targets() : (targets || TARGETS));
   const api = createSendApi({
     getPort: () => port,
@@ -79,15 +81,22 @@ async function startApp({ senders = {}, targets, remoteAddress, setTarget, ...mo
     remoteAddress,
     ...more,
   });
+  const info = createInfoApi({
+    api, senders,
+    disabled: more.disabled,
+    getPresets: () => kept.presets,
+    setPresets: list => { kept.presets = list; },
+  });
   const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, 'http://x');
     if (await api.handle(req, res, u)) return;
+    if (await info.handle(req, res, u)) return;
     res.writeHead(404); res.end('not found');
   });
   port = await listen(server);
   const origin = `http://127.0.0.1:${port}`;
   return {
-    port, origin, token: api.token, api,
+    port, origin, token: api.token, api, kept,
     close: () => close(server),
     // a well-formed request from the dock page
     // For /api/send it fills in `expect` the way the dock does: the target
@@ -120,6 +129,35 @@ function fakeSender({ signedIn = true, as = 'example_user', reply, maxLength } =
       return reply || { ok: true, id: 'fake-' + sent.length };
     },
   };
+}
+
+// The fake sender the stream info panel is tested against: holds one
+// channel's info, records every save, answers however the test tells it to.
+function fakeInfoSender({ signedIn = true, needsPermission = false, limits = { title: 140 }, search = true, reply, start } = {}) {
+  const saves = [];
+  const s = {
+    saves, signedIn, needsPermission,
+    info: start || { title: 'Old title', category: { id: '100', name: 'Old Category' }, tags: ['old'], where: '#examplechannel' },
+    status() { return { configured: true, signedIn: this.signedIn, as: this.signedIn ? 'example_user' : null, detail: '' }; },
+    async send() { return { ok: true }; },
+    infoStatus() {
+      return {
+        configured: true, signedIn: this.signedIn, as: this.signedIn ? 'example_user' : null,
+        needsPermission: this.needsPermission, ready: this.signedIn && !this.needsPermission,
+        detail: this.signedIn ? '' : 'Not signed in.', limits,
+      };
+    },
+    checkInfo({ title }) { return Array.from(title).length > limits.title ? `Titles are ${limits.title} characters at most.` : (title ? '' : 'A title is needed.'); },
+    async getInfo(want) { return { ok: true, info: { ...this.info, ...(want ? { key: want } : {}) } }; },
+    async setInfo(change) {
+      saves.push(change);
+      if (typeof reply === 'function') return reply(change);
+      return reply || { ok: true };
+    },
+  };
+  if (search) s.searchCategories = async q => ({ ok: true, categories: [{ id: '509670', name: 'Example Category ' + q }] });
+  else s.categories = async () => ({ ok: true, categories: [{ id: '28', name: 'Example Science' }] });
+  return s;
 }
 
 // A fake upstream (Twitch or Google): routes is { 'METHOD /path': (req, body, url) => [status, json, headers?] }.
@@ -186,4 +224,4 @@ async function startServer(t, extraConfig = {}, shareDir = null) {
   return { port, dir, origin: `http://127.0.0.1:${port}`, output: () => out };
 }
 
-module.exports = { TARGETS, firstEvent, startServer, listen, close, request, startApp, fakeSender, fakeUpstream };
+module.exports = { TARGETS, firstEvent, startServer, listen, close, request, startApp, fakeSender, fakeInfoSender, fakeUpstream };

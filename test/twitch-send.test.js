@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { SecretStore } = require('../lib/tokens');
-const { TwitchSender } = require('../lib/twitch-send');
+const { TwitchSender, INFO_SCOPE } = require('../lib/twitch-send');
 const { fakeUpstream, startApp } = require('./helpers');
 
 const CLIENT_ID = 'fakeclientid0123456789abcdefgh';
@@ -22,16 +22,36 @@ async function waitFor(cond, ms = 3000) {
 // A fake Twitch with real token bookkeeping: single-use refresh tokens, access
 // tokens that must match, and a chat endpoint the test can script.
 async function fakeTwitch(t, { pendingPolls = 1 } = {}) {
-  const state = { n: 0, access: null, refresh: null, pendingLeft: pendingPolls, deny: null, chat: null, users: null, streams: null, revoked: [] };
+  const state = {
+    n: 0, access: null, refresh: null, pendingLeft: pendingPolls, deny: null, chat: null, users: null, streams: null, revoked: [],
+    asked: 'user:write:chat',   // what the last device request asked for; the token carries exactly that
+    channel: { broadcaster_id: '1001', broadcaster_login: 'example_user', broadcaster_name: 'Example_User', game_id: '100', game_name: 'Old Category', title: 'Old title', tags: ['old'] },
+    patch: null, patches: [],
+  };
   const issue = () => {
     state.n++;
     state.access = 'FAKE_ACCESS_' + state.n;
     state.refresh = 'FAKE_REFRESH_' + state.n;
-    return [200, { access_token: state.access, refresh_token: state.refresh, expires_in: 14400, scope: ['user:write:chat'], token_type: 'bearer' }];
+    return [200, { access_token: state.access, refresh_token: state.refresh, expires_in: 14400, scope: state.asked.split(' '), token_type: 'bearer' }];
   };
   const authed = c => c.headers.authorization === 'Bearer ' + state.access && c.headers['client-id'] === CLIENT_ID;
   const up = await fakeUpstream({
-    'POST /oauth2/device': () => [200, { device_code: 'FAKE_DEVICE_CODE', expires_in: 1800, interval: 5, user_code: 'ABCDEFGH', verification_uri: VERIFY }],
+    'GET /helix/channels': c => {
+      if (!authed(c)) return [401, { status: 401, message: 'Invalid OAuth token' }];
+      return [200, { data: c.query.broadcaster_id === state.channel.broadcaster_id ? [state.channel] : [] }];
+    },
+    'PATCH /helix/channels': c => {
+      if (!authed(c)) return [401, { status: 401, message: 'Invalid OAuth token' }];
+      state.patches.push(c);
+      if (state.patch) return state.patch(c);
+      if (!state.asked.includes('channel:manage:broadcast')) return [401, { status: 401, message: 'Missing scope: channel:manage:broadcast or user:edit:broadcast' }];
+      return [204];
+    },
+    'GET /helix/search/categories': c => {
+      if (!authed(c)) return [401, { status: 401, message: 'Invalid OAuth token' }];
+      return [200, { data: [{ id: '509670', name: 'Example Category', box_art_url: 'https://static-cdn.jtvnw.net/ttv-boxart/509670-52x72.jpg' }, { name: 'no id' }], pagination: {} }];
+    },
+    'POST /oauth2/device': c => { state.asked = c.body.scopes; return [200, { device_code: 'FAKE_DEVICE_CODE', expires_in: 1800, interval: 5, user_code: 'ABCDEFGH', verification_uri: VERIFY }]; },
     'POST /oauth2/token': c => {
       if (c.body.grant_type === 'refresh_token') {
         if (c.body.refresh_token !== state.refresh) return [400, { status: 400, message: 'Invalid refresh token' }];
@@ -549,4 +569,168 @@ test('auth change is announced: sign-in landing, sign-out, client ID change — 
   assert.equal(n, 2);                                  // same client: nothing changed
   await sender.setup({ action: 'client', body: { clientId: 'otherfakeclientid0123456789abcd' } });
   assert.equal(n, 3);
+});
+
+// ---------- stream info ----------
+const BOTH_SCOPES = 'user:write:chat ' + INFO_SCOPE;
+
+async function signInForInfo(sender) {
+  const r = await sender.setup({ action: 'signin', body: { info: true } });
+  assert.equal(r.status, 200);
+  await waitFor(() => sender._hasInfoScope());
+}
+
+test('stream info: an ordinary sign-in asks for chat only, and a save is refused before Twitch hears of it', async t => {
+  const { up, state } = await fakeTwitch(t);
+  const { sender, file } = makeSender(t, up);
+  await signIn(sender);
+  assert.equal(up.calls.find(c => c.key === 'POST /oauth2/device').body.scopes, 'user:write:chat');
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).twitch.scopes, ['user:write:chat']);
+  const st = sender.infoStatus();
+  assert.deepEqual([st.signedIn, st.needsPermission, st.ready], [true, true, false]);
+  assert.equal(sender.setupState().hasInfoScope, false);
+  const r = await sender.setInfo({ title: 'New title', tags: [] });
+  assert.equal(r.code, 'needs_permission');
+  assert.equal(state.patches.length, 0);
+  // reading what's there needs no extra scope
+  const got = await sender.getInfo();
+  assert.deepEqual(got.info, { title: 'Old title', category: { id: '100', name: 'Old Category' }, tags: ['old'], where: '#example_user' });
+});
+
+test('stream info: a sign-in from before scopes were recorded counts as chat only', async t => {
+  const { up } = await fakeTwitch(t);
+  const { sender, file } = makeSender(t, up);
+  await signIn(sender);
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete saved.twitch.scopes;
+  fs.writeFileSync(file, JSON.stringify(saved));
+  assert.equal(sender.infoStatus().needsPermission, true);
+  assert.equal((await sender.setInfo({ title: 'x', tags: [] })).code, 'needs_permission');
+});
+
+test('stream info: the panel\'s sign-in asks for both scopes, and later sign-ins keep asking for both', async t => {
+  const { up, state } = await fakeTwitch(t);
+  const { sender, file } = makeSender(t, up);
+  await signIn(sender);
+  await signInForInfo(sender);
+  const device = up.calls.filter(c => c.key === 'POST /oauth2/device');
+  assert.equal(device[1].body.scopes, BOTH_SCOPES);
+  // the poll carries the same list it asked for
+  const polls = up.calls.filter(c => c.key === 'POST /oauth2/token' && c.body.device_code);
+  assert.equal(polls[polls.length - 1].body.scopes, BOTH_SCOPES);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).twitch.scopes, BOTH_SCOPES.split(' '));
+  const st = sender.infoStatus();
+  assert.deepEqual([st.needsPermission, st.ready, st.limits.title, st.limits.tags, st.limits.tagLength], [false, true, 140, 10, 25]);
+
+  // a refresh doesn't lose them
+  await sender.session.tokens(true);
+  assert.equal(sender._hasInfoScope(), true);
+  // signing in again from /setup — no info flag — must not drop the permission
+  state.pendingLeft = 0;
+  await sender.setup({ action: 'signin', body: {} });
+  assert.equal(up.calls.filter(c => c.key === 'POST /oauth2/device')[2].body.scopes, BOTH_SCOPES);
+  // after a deliberate sign-out it's back to asking for chat only
+  sender.setup({ action: 'cancel' });
+  await sender.setup({ action: 'signout', body: {} });
+  await signIn(sender);
+  assert.equal(up.calls.filter(c => c.key === 'POST /oauth2/device')[3].body.scopes, 'user:write:chat');
+});
+
+test('stream info: save patches my own channel with exactly what the form held', async t => {
+  const { up, state } = await fakeTwitch(t);
+  const { sender } = makeSender(t, up);
+  await signInForInfo(sender);
+  assert.deepEqual(await sender.setInfo({ title: 'Fixing an example board', categoryId: '509670', tags: ['repair', 'soldering'] }), { ok: true });
+  const c = state.patches[0];
+  assert.equal(c.query.broadcaster_id, '1001');
+  assert.deepEqual(c.body, { title: 'Fixing an example board', tags: ['repair', 'soldering'], game_id: '509670' });
+  // category left alone: no game_id at all. Cleared: an empty one.
+  await sender.setInfo({ title: 'x', tags: [] });
+  assert.deepEqual(state.patches[1].body, { title: 'x', tags: [] });
+  await sender.setInfo({ title: 'x', categoryId: '', tags: [] });
+  assert.equal(state.patches[2].body.game_id, '');
+});
+
+test('stream info: Twitch\'s refusals come back in its words; a missing scope is not a dead sign-in', async t => {
+  const { up, state } = await fakeTwitch(t);
+  const { sender, clock } = makeSender(t, up);
+  await signInForInfo(sender);
+  const form = { title: 'x', tags: ['a'] };
+
+  state.patch = () => [400, { status: 400, message: 'One or more tags were not applied because they failed AutoMod review.' }];
+  let r = await sender.setInfo(form);
+  assert.deepEqual([r.ok, r.code], [false, 'rejected']);
+  assert.match(r.reason, /AutoMod/);
+
+  // Twitch says the token lacks the scope although we thought it had it
+  state.patch = () => [401, { status: 401, message: 'Missing scope: channel:manage:broadcast or user:edit:broadcast' }];
+  r = await sender.setInfo(form);
+  assert.equal(r.code, 'needs_permission');
+  assert.equal(sender.status().signedIn, true);
+
+  state.patch = () => [429, { status: 429, message: 'Too Many Requests' }, { 'ratelimit-reset': String(Math.ceil(clock.t / 1000) + 30) }];
+  r = await sender.setInfo(form);
+  assert.equal(r.code, 'rate_limited');
+  assert.ok(r.retryAfter > 0 && r.retryAfter <= 31);
+  const before = state.patches.length;
+  assert.equal((await sender.setInfo(form)).code, 'rate_limited');      // held off: nothing sent
+  assert.equal((await sender.getInfo()).code, 'rate_limited');
+  assert.equal(state.patches.length, before);
+  clock.t += 31000;
+
+  state.patch = () => [401, { status: 401, message: 'Invalid OAuth token' }];
+  r = await sender.setInfo(form);
+  assert.equal(r.code, 'not_signed_in');
+  assert.equal(sender.status().signedIn, false);
+  assert.equal((await sender.getInfo()).code, 'not_signed_in');
+  assert.equal((await sender.searchCategories('x')).code, 'not_signed_in');
+});
+
+test('stream info: category search, and the rules checked before Twitch is asked', async t => {
+  const { up } = await fakeTwitch(t);
+  const { sender } = makeSender(t, up);
+  await signIn(sender);                       // searching needs no extra scope
+  const r = await sender.searchCategories('exam ple&x');
+  assert.deepEqual(r, { ok: true, categories: [{ id: '509670', name: 'Example Category' }] });
+  const call = up.calls.find(c => c.key === 'GET /helix/search/categories');
+  assert.deepEqual(call.query, { first: '10', query: 'exam ple&x' });
+
+  const ok = { title: 'x'.repeat(140), tags: Array.from({ length: 10 }, (_, i) => 'tag' + i) };
+  assert.equal(sender.checkInfo(ok), '');
+  assert.match(sender.checkInfo({ ...ok, title: '' }), /needs a title/);
+  assert.match(sender.checkInfo({ ...ok, title: 'x'.repeat(141) }), /140/);
+  assert.match(sender.checkInfo({ ...ok, tags: [...ok.tags, 'eleven'] }), /10 tags/);
+  assert.match(sender.checkInfo({ ...ok, tags: ['two words'] }), /spaces/);
+  assert.match(sender.checkInfo({ ...ok, tags: ['x'.repeat(26)] }), /25/);
+  assert.equal(sender.checkInfo({ ...ok, tags: ['x'.repeat(25)] }), '');
+});
+
+test('stream info over HTTP: grant from the panel, read, save — no token in any response', async t => {
+  const { up, state } = await fakeTwitch(t);
+  const { sender } = makeSender(t, up);
+  const app = await startApp({ senders: { twitch: sender } });
+  t.after(app.close);
+  await signIn(sender);
+  const seen = [];
+  const get = async p => { const r = await app.get(p); seen.push(r.text); return r; };
+  const post = async (p, b) => { const r = await app.post(p, b); seen.push(r.text); return r; };
+
+  assert.equal((await get('/api/info/state')).json.platforms.twitch.needsPermission, true);
+  assert.equal((await post('/api/info/save', { platforms: ['twitch'], title: 'New title', tags: [] })).json.results.twitch.code, 'needs_permission');
+  const grant = await post('/api/setup/twitch/signin', { info: true });
+  assert.equal(grant.json.userCode, 'ABCDEFGH');
+  await waitFor(() => sender._hasInfoScope());
+  assert.equal((await get('/api/setup/state')).json.platforms.twitch.hasInfoScope, true);
+  assert.equal((await get('/api/info/state')).json.platforms.twitch.ready, true);
+  assert.equal((await get('/api/info/current?platform=twitch')).json.info.title, 'Old title');
+  assert.equal((await get('/api/info/categories?platform=twitch&q=exam')).json.categories[0].id, '509670');
+
+  const r = await post('/api/info/save', { platforms: ['twitch'], title: 'New title', tags: ['repair'], category: { twitch: { id: '509670', name: 'Example Category' } } });
+  assert.deepEqual(r.json.results, { twitch: { ok: true } });
+  assert.deepEqual(state.patches[0].body, { title: 'New title', tags: ['repair'], game_id: '509670' });
+  // too long for Twitch: refused here, Twitch never asked
+  const long = await post('/api/info/save', { platforms: ['twitch'], title: 'x'.repeat(141), tags: [] });
+  assert.equal(long.status, 400);
+  assert.equal(state.patches.length, 1);
+  for (const text of seen) assert.doesNotMatch(text, /FAKE_ACCESS|FAKE_REFRESH|FAKE_DEVICE/);
 });

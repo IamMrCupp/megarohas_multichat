@@ -211,6 +211,96 @@ before sending — so an over-long YouTube reply costs no quota, and a *Both* th
 but not YouTube goes to neither rather than to Twitch alone. The 200 is from YouTube's Help
 pages; the API reference itself gives no number.
 
+## Stream info
+
+The panel at **http://127.0.0.1:3131/info** sets the stream's title, category and tags on
+both platforms from one form. It uses the sign-ins above; there's nothing new to register.
+
+### Twitch: one more permission
+
+Changing channel information is
+[Modify Channel Information](https://dev.twitch.tv/docs/api/reference/#modify-channel-information),
+and it wants a scope chat doesn't have: **`channel:manage:broadcast`**. Twitch describes it
+as managing "a channel's broadcast configuration, including updating channel configuration
+and managing stream markers and stream tags"
+([scopes](https://dev.twitch.tv/docs/authentication/scopes/)). This server uses it for the
+one call and nothing else.
+
+- It isn't asked for when you sign in from `/setup`. The panel shows **Grant** next to
+  Twitch; pressing it starts the same device-code sign-in again, this time asking for both
+  scopes. Approve the code and the panel carries on.
+- Once granted, later sign-ins from `/setup` keep asking for both, so signing in again
+  doesn't quietly take it away. **Sign out** forgets it; the next sign-in is chat-only until
+  you press **Grant** again.
+- Reading what the channel has now
+  ([Get Channel Information](https://dev.twitch.tv/docs/api/reference/#get-channel-information))
+  and searching categories
+  ([Search Categories](https://dev.twitch.tv/docs/api/reference/#search-categories)) need no
+  extra scope.
+- It only ever edits the channel you're signed in as. Twitch requires that anyway: the
+  broadcaster ID "must match the user ID in the user access token".
+- The limits come from the reference: a title is 140 characters at most and can't be empty;
+  10 tags at most, 25 characters each, no spaces or special characters. The count, the
+  length and the spaces are checked before Twitch is asked. "Special characters" isn't
+  defined there, so that one is left to Twitch and its answer is shown as it comes.
+- Category is an ID on Twitch's side, which is why the form searches by name. The **×** next
+  to the chosen category clears it.
+
+### YouTube: same sign-in, a little quota
+
+No new permission — the `youtube.force-ssl` scope sending already has covers it. What it
+costs, from the [quota table](https://developers.google.com/youtube/v3/determine_quota_cost):
+
+| When | Calls | Units |
+|---|---|---|
+| Opening the panel, or **Reload** | `liveBroadcasts.list` + `videos.list` | 2 |
+| The category menu, once per run of the server | `videoCategories.list` | 1 |
+| **Save**, tags unchanged | the two reads + `liveBroadcasts.update` | 3 |
+| **Save**, tags changed | the two reads + `videos.update` | 52 |
+
+Out of 10,000 a day by default. Add one unit to any row when nothing is live (the second
+list call). The panel doesn't poll: it asks when it opens, when you
+press **Reload**, and as part of a save.
+
+- **Which broadcast.** Whatever is live on the signed-in channel; if nothing is, the next
+  scheduled broadcast. With more than one to choose from, the panel shows a menu. A save
+  names the broadcast the panel was showing and is refused if that's no longer the one —
+  same idea as the reply target in the dock.
+- **No live or upcoming broadcast** means there's nothing to edit. The panel says so and
+  Twitch still saves. Create the broadcast in YouTube Studio first.
+- **Why two different update calls.** Title and category live on the broadcast
+  ([liveBroadcasts.update](https://developers.google.com/youtube/v3/live/docs/liveBroadcasts/update),
+  1 unit). Tags don't — a broadcast has none; they belong to its video
+  ([videos.update](https://developers.google.com/youtube/v3/docs/videos/update), 50 units).
+  So the expensive call is made only when the tags actually changed, and then it carries the
+  title and category too.
+- **Nothing else is touched.** Both update calls delete any property the request leaves
+  out, so each one sends back the description (and the schedule, for a broadcast) exactly as
+  it was read a moment earlier.
+- The limits: a title is 1 to 100 characters with no `<` or `>`; tags add up to 500
+  characters at most, counting the commas between them and two quotation marks for any tag
+  with a space in it ([video resource](https://developers.google.com/youtube/v3/docs/videos)).
+- YouTube has no "no category", so the menu's first entry is *leave as it is*. The menu is
+  the US region's assignable categories.
+
+### Presets
+
+A preset is a named copy of the form — title, the two categories, tags — kept in
+`config.json` under `infoPresets`. No tokens, nothing secret, safe to back up. Up to 30.
+Keeping or deleting one never contacts Twitch or YouTube.
+
+### Not checked against the real services
+
+The tests run against fake Twitch and fake Google servers built from the references linked
+above. Two things there the references don't settle, so the code doesn't assume them:
+
+- Whether a broadcast and its video share an ID. The reference says a broadcast "represents
+  exactly one YouTube video" and stops there. The panel looks the video up under the
+  broadcast's ID; if nothing answers, the title and category still save and the panel says
+  the tags were left alone.
+- Whether Twitch's sign-in reports the scopes it granted. If it doesn't, the server records
+  the ones it asked for.
+
 ## Viewer counts and the official-API switches
 
 The overlay's viewer bar (`?viewers=1`) needs no setup of its own:

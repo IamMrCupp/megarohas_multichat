@@ -8,8 +8,9 @@ Node.js process running on your own machine.
 
 > **This is a fork** of [megarohas/megarohas_multichat](https://github.com/megarohas/megarohas_multichat)
 > by megarohas — all the reading, the overlay and the panel are their work, MIT-licensed.
-> The fork adds one thing: a **reply dock**, so the streamer can answer both chats from one
-> place. Reading still needs no keys and no sign-in.
+> The fork adds a **reply dock**, so the streamer can answer both chats from one place, and a
+> **stream info panel** that sets the title, category and tags on both platforms from one
+> form. Reading still needs no keys and no sign-in.
 
 - Paste your stream links — messages from both platforms show up in a single
   chat in arrival order, in real time.
@@ -122,6 +123,36 @@ answer from the same box.
 
 Tokens live in `secrets.json` beside `config.json`, owner-readable only. They're never
 logged and never sent to a page.
+
+## Stream info panel
+
+Going live on two platforms means typing the same title into two web pages. This is one
+form for both.
+
+- Panel: **http://127.0.0.1:3131/info** — add it as a second OBS browser dock, same way as
+  the reply dock.
+- Title, category and tags. Tick the platforms it should go to, **Save**, and each one
+  answers for itself: `Twitch: saved`, `YouTube: not saved — …`. One side failing doesn't
+  hide the other side working.
+- **It shows what each platform has now**, above the form, so a save isn't blind. The form
+  starts out filled from that.
+- One title and one tag list, checked against every ticked platform before anything is
+  saved. Twitch allows 140 characters, 10 tags and no spaces in a tag; YouTube allows 100
+  characters and no `<` or `>`. A title that fits one and not the other is saved to neither.
+- Categories are separate because they are separate things: Twitch's is searched by name,
+  YouTube's is a short menu.
+- **Presets** keep a title, categories and tags under a name, in `config.json`. Keeping one
+  sends nothing to Twitch or YouTube.
+- **Twitch** needs one more permission than chat does, `channel:manage:broadcast`. It isn't
+  asked for until you press **Grant** in the panel — one more trip through the same
+  device-code sign-in.
+- **YouTube** is off until the Google client from sending is set up; it needs no new
+  permission. It edits the broadcast that's live on the signed-in channel, or the next
+  scheduled one, and says which. A save costs 3 quota units, 52 when the tags change. No
+  live or upcoming broadcast means nothing to edit, and it says so.
+- Same rules as sending: this machine only, this server's own page, the session token.
+
+Details, permissions and quota arithmetic: [docs/SETUP-SENDING.md](docs/SETUP-SENDING.md#stream-info).
 
 **Sending is local-only.** The send and setup endpoints refuse anything that isn't this
 machine: the request has to come from a loopback address, name this server in `Host`, come
@@ -243,4 +274,4 @@ loopback.
 - YouTube latency is a couple of seconds (polling); Twitch is near zero.
 - `config.json`: `host`/`port` can be changed (e.g. `"host": "0.0.0.0"` if OBS
   is on another machine). `replyTo` is written by the dock — it remembers which source
-  each platform replies to.
+  each platform replies to. `infoPresets` is written by the stream info panel.
