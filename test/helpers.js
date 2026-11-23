@@ -116,13 +116,13 @@ async function startApp({ senders = {}, targets, remoteAddress, setTarget, prese
 
 // The fake sender the dock is tested against: records what it was asked to
 // send and answers however the test tells it to.
-function fakeSender({ signedIn = true, as = 'example_user', reply, maxLength } = {}) {
+function fakeSender({ signedIn = true, as = 'example_user', reply, maxLength, id } = {}) {
   const sent = [];
   return {
     sent,
     ...(maxLength ? { maxLength } : {}),
     signedIn,
-    status() { return { configured: true, signedIn: this.signedIn, as: this.signedIn ? as : null, detail: '' }; },
+    status() { return { configured: true, signedIn: this.signedIn, as: this.signedIn ? as : null, detail: '', ...(id ? { id: this.signedIn ? id : null } : {}) }; },
     async send(text, target) {
       sent.push({ text, target });
       if (typeof reply === 'function') return reply(text, target);

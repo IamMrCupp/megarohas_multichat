@@ -15,7 +15,7 @@ test('session hands the dock its token and platform state', async t => {
   assert.deepEqual(r.json.platforms.twitch, {
     available: true, configured: true, signedIn: true, as: 'example_user', detail: '',
     connected: true, target: '#examplechannel', targetKey: 'aaaa1111:examplechannel',
-    choices: [{ id: 'aaaa1111', label: '#examplechannel' }], maxLength: 500,
+    choices: [{ id: 'aaaa1111', label: '#examplechannel' }], maxLength: 500, warning: '',
   });
   assert.equal(r.json.platforms.youtube.available, false);
   assert.equal(r.json.platforms.youtube.signedIn, false);
@@ -233,4 +233,33 @@ test('length: each platform\'s own limit, checked for both before anything is se
   assert.equal(youtube.sent.length, 1);
   // counted in characters, not UTF-16 units
   assert.equal((await app.post('/api/send', { target: 'youtube', text: '😀'.repeat(200) })).status, 200);
+});
+
+test('wrong channel: signed in as one channel while reading another\'s chat is said, not refused', async t => {
+  const MINE = 'UCfakefakefakefakefakeAA';
+  const THEIRS = 'UCfakefakefakefakefakeBB';
+  const target = ownerId => ({ ...TARGETS, youtube: { ...TARGETS.youtube, ownerId } });
+  const youtube = fakeSender({ as: 'Example Channel (@example2960)', id: MINE });
+  let targets = target(THEIRS);
+  const app = await startApp({ senders: { twitch: fakeSender(), youtube }, targets: () => targets });
+  t.after(app.close);
+
+  let y = (await app.get('/api/dock/session')).json.platforms.youtube;
+  assert.match(y.warning, /Signed in as Example Channel \(@example2960\) — not the channel this YouTube chat belongs to/);
+  assert.match(y.warning, /\/setup/);
+  // still a working target: a mod answering in someone else's stream is allowed
+  assert.equal((await app.post('/api/send', { target: 'youtube', text: 'hello' })).json.results.youtube.ok, true);
+  assert.equal((await app.get('/api/dock/session')).json.platforms.twitch.warning, '');
+  // the setup page and the stream info state say the same
+  assert.equal((await app.get('/api/setup/state')).json.platforms.youtube.warning, y.warning);
+
+  targets = target(MINE);                       // the right channel
+  assert.equal((await app.get('/api/dock/session')).json.platforms.youtube.warning, '');
+  targets = target(null);                       // the reader couldn't tell whose stream it is
+  assert.equal((await app.get('/api/dock/session')).json.platforms.youtube.warning, '');
+  targets = { ...TARGETS, youtube: { pinned: false, choices: [] } };   // nothing pinned
+  assert.equal((await app.get('/api/dock/session')).json.platforms.youtube.warning, '');
+  targets = target(THEIRS);
+  youtube.signedIn = false;                     // nobody signed in: nothing to warn about
+  assert.equal((await app.get('/api/dock/session')).json.platforms.youtube.warning, '');
 });
