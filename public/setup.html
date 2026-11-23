@@ -248,7 +248,10 @@ sections.twitch = (body, p) => {
     row.appendChild(button('Change client ID', '', () => { editTwitchClient = true; refresh(false, true); }));
   }
   body.appendChild(row);
-  body.appendChild(el('div', 'note', `Asks Twitch for one permission: ${p.scopes} — send chat messages as you. Nothing else.`));
+  // What it says has to be what the sign-in holds, not what a first sign-in asks for.
+  body.appendChild(el('div', 'note', p.hasInfoScope
+    ? `Holds two Twitch permissions: ${p.scopes} — send chat messages as you — and ${p.infoScope} — change the stream's title, category and tags, granted from the stream info panel. Nothing else. Sign out drops both.`
+    : `Asks Twitch for one permission: ${p.scopes} — send chat messages as you. Nothing else.`));
 };
 
 async function refresh(retried, force) {
