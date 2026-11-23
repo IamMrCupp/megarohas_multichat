@@ -160,7 +160,35 @@ taken and it fell back to another port, the setup page shows the one it's really
 2. Under **YouTube**, paste the client ID and the client secret, **Save**.
 3. **Sign in with Google**. Pick the account that owns the channel, approve.
 4. Google sends the browser back to this server, and the setup page shows
-   **Signed in as _your channel_**.
+   **Signed in as _your channel_ (@handle) · channel UC…**.
+
+#### One Google account, more than one channel
+
+A Google account can hold several YouTube channels — the personal one plus any brand
+channels — and two of them can have the same name. Google asks which one after you pick the
+account, and the list doesn't always make them easy to tell apart.
+
+So check what the setup page says after signing in. The name can match on both; the
+**@handle** and the **channel ID** can't. A channel nobody set up has a handle YouTube made
+for it, usually the name with digits on the end.
+
+If you picked the wrong one, the pages say so. The reader knows which channel the stream
+belongs to, and when that isn't the channel you're signed in as, the dock, the stream info
+panel and the setup page all show:
+
+> Signed in as _Name (@handle)_ — not the channel this YouTube chat belongs to.
+
+It's a warning, not a block: answering in someone else's chat is a normal thing to do. If
+it's your own stream, **Sign out**, **Sign in with Google** again and pick the other entry.
+If Google offers only one, switch channels at <https://www.youtube.com/channel_switcher> in
+that browser first.
+
+The check costs no quota. The stream's channel comes off the watch page the reader already
+fetches; if YouTube changes that page the warning goes quiet, and nothing else breaks. The
+handle comes from the same `channels.list` call sign-in already makes. Its `customUrl` field
+is documented only as "the channel's custom URL", so it's shown as a handle only when it
+looks like one; a sign-in from before this was added shows the channel ID alone until you
+sign in again.
 
 Replies go to the broadcast the reader is already following on your YouTube source, and the
 dock shows it: `YouTube → Your Channel · video …`, or `not live yet`. That's the first YouTube

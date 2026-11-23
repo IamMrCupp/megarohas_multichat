@@ -18,7 +18,7 @@ const TARGET = { videoId: VIDEO, channel: 'Example Channel' };
 const gErr = (status, reason, message) => [status, { error: { code: status, message, errors: [{ domain: 'youtube.liveChat', reason, message }] } }];
 
 async function fakeGoogle(t) {
-  const state = { n: 0, access: null, refresh: null, code: 'FAKE_AUTH_CODE', verifierOk: null, insert: null, video: null, revoked: [], noRefresh: false, noChannel: false };
+  const state = { customUrl: undefined, n: 0, access: null, refresh: null, code: 'FAKE_AUTH_CODE', verifierOk: null, insert: null, video: null, revoked: [], noRefresh: false, noChannel: false };
   const authed = c => c.headers.authorization === 'Bearer ' + state.access;
   const up = await fakeUpstream({
     'POST /token': c => {
@@ -36,7 +36,7 @@ async function fakeGoogle(t) {
     'POST /revoke': c => { state.revoked.push(c.body.token); return [200, {}]; },
     'GET /youtube/v3/channels': c => {
       if (!authed(c)) return gErr(401, 'authError', 'Invalid Credentials');
-      return [200, { items: state.noChannel ? [] : [{ id: 'UCfakefakefakefakefakefa', snippet: { title: 'Example Channel' } }] }];
+      return [200, { items: state.noChannel ? [] : [{ id: 'UCfakefakefakefakefakefa', snippet: { title: 'Example Channel', ...(state.customUrl ? { customUrl: state.customUrl } : {}) } }] }];
     },
     'GET /youtube/v3/videos': c => {
       if (!authed(c)) return gErr(401, 'authError', 'Invalid Credentials');
@@ -90,7 +90,7 @@ const apiCalls = up => up.calls.filter(c => c.path.startsWith('/youtube/v3/'));
 
 test('sign-in: authorization URL is exactly the documented installed-app request, with PKCE', async t => {
   const c = await setup(t, { signIn: false });
-  assert.deepEqual(c.sender.status(), { configured: true, signedIn: false, as: null, detail: '' });
+  assert.deepEqual(c.sender.status(), { configured: true, signedIn: false, as: null, detail: '', id: null });
   const auth = await c.begin();
   assert.equal(auth.origin + auth.pathname, 'https://accounts.google.com/o/oauth2/v2/auth');
   const q = Object.fromEntries(auth.searchParams);
@@ -112,7 +112,7 @@ test('sign-in: authorization URL is exactly the documented installed-app request
   assert.equal(exchange.body.grant_type, 'authorization_code');
   assert.equal(exchange.body.redirect_uri, q.redirect_uri);
 
-  assert.deepEqual(c.sender.status(), { configured: true, signedIn: true, as: 'Example Channel', detail: '' });
+  assert.deepEqual(c.sender.status(), { configured: true, signedIn: true, as: 'Example Channel', detail: '', id: 'UCfakefakefakefakefakefa' });
   const saved = c.saved();
   assert.equal(saved.refreshToken, c.state.refresh);
   assert.equal(saved.clientSecret, CLIENT_SECRET);
@@ -272,7 +272,7 @@ test('a dead refresh token signs out, keeps the client, and says so', async t =>
   c.state.refresh = 'FAKE_YT_REFRESH_GONE';
   c.clock.t += 3600 * 1000;
   assert.deepEqual(await c.sender.send('x', TARGET), { ok: false, code: 'not_signed_in', reason: 'Google sign-in expired — sign in again.' });
-  assert.deepEqual(c.sender.status(), { configured: true, signedIn: false, as: null, detail: 'Google sign-in expired — sign in again.' });
+  assert.deepEqual(c.sender.status(), { configured: true, signedIn: false, as: null, detail: 'Google sign-in expired — sign in again.', id: null });
   assert.deepEqual(c.saved(), { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET });
 });
 
@@ -749,4 +749,45 @@ test('stream info over HTTP: read, pick a category, save to the shown broadcast 
   assert.equal(stale.json.results.youtube.code, 'target_changed');
   assert.equal(w.puts.length, 1);
   for (const text of seen) assert.doesNotMatch(text, /FAKE_YT_ACCESS|FAKE_YT_REFRESH|FAKE_CLIENT_SECRET/);
+});
+
+// ---------- which channel is this, really ----------
+test('sign-in records the handle and the channel ID, so two channels with one title can be told apart', async t => {
+  const ctx = await setup(t, { signIn: false });
+  ctx.state.customUrl = '@example2960';
+  await ctx.signIn();
+  assert.equal(ctx.saved().handle, '@example2960');
+  assert.deepEqual(ctx.sender.status(), { configured: true, signedIn: true, as: 'Example Channel (@example2960)', detail: '', id: 'UCfakefakefakefakefakefa' });
+  const st = (await ctx.app.get('/api/setup/state')).json.platforms.youtube;
+  assert.deepEqual([st.as, st.channelId, st.handle], ['Example Channel (@example2960)', 'UCfakefakefakefakefakefa', '@example2960']);
+  assert.equal(ctx.sender.infoStatus().as, 'Example Channel (@example2960)');
+
+  // signed out: the page is told nothing about the channel that was
+  await ctx.app.post('/api/setup/youtube/signout', {});
+  const out = (await ctx.app.get('/api/setup/state')).json.platforms.youtube;
+  assert.deepEqual([out.as, out.channelId, out.handle], [null, '', '']);
+  assert.equal(ctx.saved().handle, undefined);
+
+  // a custom URL that isn't a handle is not shown as one
+  for (const odd of ['/c/ExampleChannel', 'examplechannel', '@has space', '']) {
+    ctx.state.customUrl = odd;
+    await ctx.signIn();
+    assert.equal(ctx.saved().handle, undefined, odd);
+    assert.equal(ctx.sender.status().as, 'Example Channel', odd);
+  }
+});
+
+test('the wrong channel on a real sign-in: the dock says whose name replies go out under', async t => {
+  const ctx = await setup(t, { signIn: false });
+  ctx.state.customUrl = '@example2960';
+  await ctx.signIn();
+  const { TARGETS } = require('./helpers');
+  const reading = ownerId => ({ ...TARGETS, youtube: { ...TARGETS.youtube, ownerId } });
+  let targets = reading('UCsomeoneelsesomeoneelse');
+  const app = await startApp({ senders: { youtube: ctx.sender }, targets: () => targets });
+  t.after(app.close);
+  const y = (await app.get('/api/dock/session')).json.platforms.youtube;
+  assert.match(y.warning, /Signed in as Example Channel \(@example2960\) — not the channel this YouTube chat belongs to/);
+  targets = reading('UCfakefakefakefakefakefa');
+  assert.equal((await app.get('/api/dock/session')).json.platforms.youtube.warning, '');
 });

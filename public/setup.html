@@ -21,7 +21,7 @@
   .sub { color: var(--mut); font-size: 13px; margin-top: 3px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px; margin-top: 16px; }
   h2 { color: var(--acc); font-size: 12px; letter-spacing: 1.6px; text-transform: uppercase; margin-bottom: 10px; }
-  .status { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+  .status { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-bottom: 10px; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: #777; flex: none; }
   .dot.ok { background: var(--ok); }
   .dot.bad { background: var(--err); }
@@ -89,6 +89,9 @@ function statusRow(p) {
   const row = el('div', 'status');
   row.appendChild(el('span', 'dot ' + (p.signedIn ? 'ok' : (p.available ? '' : 'bad'))));
   row.appendChild(el('span', '', p.signedIn ? `Signed in as ${p.as || '?'}` : (p.available ? 'Not signed in' : 'Not available')));
+  // Titles can repeat across channels; the ID can't.
+  if (p.signedIn && p.channelId) row.appendChild(el('span', 'note', ` · channel ${p.channelId}`));
+  if (p.signedIn && p.warning) { const w = el('div', 'note bad', p.warning); w.style.flexBasis = '100%'; row.appendChild(w); }
   return row;
 }
 

@@ -8,7 +8,7 @@ function world() {
   let changes = 0;
   const targets = createReplyTargets({ listSources: () => sources, onChange: () => { changes++; } });
   const add = (id, platform, url, extra = {}) => {
-    const entry = { id, platform, url, channel: extra.channel || platform, adapter: platform === 'twitch' ? { channel: extra.channel } : { videoId: extra.videoId || null } };
+    const entry = { id, platform, url, channel: extra.channel || platform, adapter: platform === 'twitch' ? { channel: extra.channel } : { videoId: extra.videoId || null, ...(extra.ownerChannelId ? { ownerChannelId: extra.ownerChannelId } : {}) } };
     sources.push(entry);
     targets.added(entry);
     return entry;
@@ -102,4 +102,13 @@ test('the choice is saved by URL and restored on the next start', () => {
   next.targets.restore(undefined);
   next.targets.restore({ twitch: 42 });
   assert.equal(next.targets.get().twitch.sourceId, 'ffff0002');
+});
+
+test('a YouTube target carries whose stream it is, when the reader could tell', () => {
+  const w = world();
+  w.add('bbbb2222', 'youtube', 'https://youtube.com/@example/live', { channel: 'Example Channel', videoId: 'FAKEvideo01', ownerChannelId: 'UCfakefakefakefakefakefa' });
+  assert.equal(w.targets.get().youtube.ownerId, 'UCfakefakefakefakefakefa');
+  const v = world();
+  v.add('bbbb2222', 'youtube', 'https://youtube.com/@example/live', { channel: 'Example Channel', videoId: 'FAKEvideo01' });
+  assert.equal(v.targets.get().youtube.ownerId, null);
 });

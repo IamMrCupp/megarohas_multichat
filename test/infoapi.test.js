@@ -219,3 +219,16 @@ test('presets and tags from a hand-edited config are cleaned, not trusted', () =
   assert.deepEqual(cleanTags([' a ', 'A', 5, null, 'b\nc']), ['a', 'b c']);
   assert.equal(cleanTags(Array.from({ length: 500 }, (_, i) => 't' + i)).length, 50);
 });
+
+test('info state repeats the dock\'s wrong-channel warning: this panel edits the signed-in channel', async t => {
+  const { TARGETS } = require('./helpers');
+  const youtube = Object.assign(fakeInfoSender({ search: false }), {
+    status() { return { configured: true, signedIn: true, as: 'Example Channel (@example2960)', detail: '', id: 'UCfakefakefakefakefakeAA' }; },
+  });
+  const twitch = fakeInfoSender();
+  const app = await startApp({ senders: { twitch, youtube }, targets: { ...TARGETS, youtube: { ...TARGETS.youtube, ownerId: 'UCfakefakefakefakefakeBB' } } });
+  t.after(app.close);
+  const r = await app.get('/api/info/state');
+  assert.match(r.json.platforms.youtube.warning, /@example2960\) — not the channel this YouTube chat belongs to/);
+  assert.equal(r.json.platforms.twitch.warning, '');
+});

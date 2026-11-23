@@ -54,6 +54,7 @@
   #targets .t span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #targets .t.ok span { color: var(--ink); }
   #targets a { color: var(--acc); flex: none; }
+  #targets .warn { color: var(--err); padding: 1px 0 3px; overflow-wrap: anywhere; }
   #targets select {
     flex: none; max-width: 45%; background: var(--field); color: var(--ink);
     border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 11.5px; padding: 1px 3px;
@@ -264,6 +265,7 @@ function renderTargets() {
       row.appendChild(sel);
     }
     targetsEl.appendChild(row);
+    if (s.warning) targetsEl.appendChild(el('div', 'warn', s.warning));
   }
 }
 
